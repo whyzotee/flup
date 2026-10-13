@@ -1,6 +1,6 @@
 use crate::error::{FlupError, Result};
 use crate::storage::commit::commit_files;
-use crate::storage::tree_copy::copy_tree;
+use crate::storage::tree_copy::stage_workspace_trees;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,9 +26,12 @@ impl Transaction {
             keep_backup: false,
         };
 
-        // The stage starts from the backup, so both contain the same project snapshot.
-        copy_tree(project, &transaction.backup_path())?;
-        copy_tree(&transaction.backup_path(), &transaction.stage_path())?;
+        // Stage both the backup and stage in a single traversal of the project.
+        stage_workspace_trees(
+            project,
+            &transaction.backup_path(),
+            &transaction.stage_path(),
+        )?;
         Ok(transaction)
     }
 
