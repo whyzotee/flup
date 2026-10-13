@@ -1,10 +1,12 @@
 use crate::error::{FlupError, Result};
 use crate::flutter::flutter_binary;
+use crate::storage::tree_copy::copy_tree;
 use crate::upgrade::project::ProjectInfo;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn sdk_revision(root: &Path) -> Result<String> {
     let output = Command::new("git")
@@ -186,7 +188,117 @@ pub(crate) fn command_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3u64);
+    }
+    hash
+}
+
+pub fn template_cache_key(revision: &str, info: &ProjectInfo) -> String {
+    let mut sorted_platforms = info.platforms.clone();
+    sorted_platforms.sort();
+
+    let key_string = format!(
+        "{}:{}:{}:{}:{}:{}",
+        revision,
+        info.name,
+        info.organization,
+        sorted_platforms.join(","),
+        info.android_language.as_deref().unwrap_or(""),
+        info.ios_language.as_deref().unwrap_or("")
+    );
+    let hash = fnv1a_64(key_string.as_bytes());
+    let sanitized_rev: String = revision
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{sanitized_rev}-{hash:016x}")
+}
+
+fn template_cache_root() -> Option<PathBuf> {
+    if std::env::var_os("FLUP_NO_CACHE").is_some() {
+        return None;
+    }
+
+    if let Some(dir) = std::env::var_os("FLUP_CACHE_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("LOCALAPPDATA") {
+            return Some(PathBuf::from(appdata).join("flup").join("templates"));
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+            return Some(PathBuf::from(cache_home).join("flup").join("templates"));
+        }
+    }
+
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    Some(PathBuf::from(home).join(".flup").join("templates"))
+}
+
+fn unique_temp_cache_name(prefix: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    format!(".tmp-{prefix}-{pid}-{now}")
+}
+
+fn store_template_cache(source: &Path, cached_dir: &Path) {
+    if cached_dir.exists() {
+        return;
+    }
+    let Some(parent) = cached_dir.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+
+    let temp_name = unique_temp_cache_name("template");
+    let temp_path = parent.join(temp_name);
+
+    if copy_tree(source, &temp_path).is_ok() {
+        if fs::rename(&temp_path, cached_dir).is_err() {
+            let _ = fs::remove_dir_all(&temp_path);
+        }
+    } else {
+        let _ = fs::remove_dir_all(&temp_path);
+    }
+}
+
 pub fn generate_template(sdk: &Path, output: &Path, info: &ProjectInfo) -> Result<()> {
+    // 1. Try local template cache
+    if let (Ok(revision), Some(cache_root)) = (sdk_revision(sdk), template_cache_root()) {
+        let key = template_cache_key(&revision, info);
+        let cached_dir = cache_root.join(key);
+        if verify_template_output(&cached_dir, &info.platforms, sdk).is_ok() {
+            if copy_tree(&cached_dir, output).is_ok()
+                && verify_template_output(output, &info.platforms, sdk).is_ok()
+            {
+                return Ok(());
+            }
+            let _ = fs::remove_dir_all(output);
+        }
+    }
+
+    // 2. Cache miss: run flutter create
     let args = build_template_args(info, output);
     let result = Command::new(flutter_binary(sdk))
         .env("FLUTTER_SUPPRESS_ANALYTICS", "true")
@@ -205,7 +317,16 @@ pub fn generate_template(sdk: &Path, output: &Path, info: &ProjectInfo) -> Resul
         return Err(FlupError::Template(message));
     }
 
-    verify_template_output(output, &info.platforms, sdk)
+    verify_template_output(output, &info.platforms, sdk)?;
+
+    // 3. Cache the verified template for subsequent runs
+    if let (Ok(revision), Some(cache_root)) = (sdk_revision(sdk), template_cache_root()) {
+        let key = template_cache_key(&revision, info);
+        let cached_dir = cache_root.join(key);
+        store_template_cache(output, &cached_dir);
+    }
+
+    Ok(())
 }
 
 fn build_template_args(info: &ProjectInfo, output: &Path) -> Vec<OsString> {

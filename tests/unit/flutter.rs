@@ -113,3 +113,47 @@ fn git_migration_branch_is_skipped_when_not_a_git_repository() {
     let branch = flup::flutter::process::create_migration_branch(&project, "3.27.1").unwrap();
     assert_eq!(branch, None);
 }
+
+#[test]
+fn template_cache_key_is_deterministic_and_sensitive_to_parameters() {
+    use flup::flutter::process::template_cache_key;
+    use flup::upgrade::project::ProjectInfo;
+
+    let info1 = ProjectInfo {
+        name: "my_app".into(),
+        revision: "rev1".into(),
+        platforms: vec!["android".into(), "ios".into()],
+        organization: "com.example".into(),
+        android_language: None,
+        ios_language: None,
+    };
+    let info2 = ProjectInfo {
+        name: "my_app".into(),
+        revision: "rev1".into(),
+        platforms: vec!["ios".into(), "android".into()],
+        organization: "com.example".into(),
+        android_language: None,
+        ios_language: None,
+    };
+    let info3 = ProjectInfo {
+        name: "other_app".into(),
+        revision: "rev1".into(),
+        platforms: vec!["android".into(), "ios".into()],
+        organization: "com.example".into(),
+        android_language: None,
+        ios_language: None,
+    };
+
+    assert_eq!(
+        template_cache_key("rev1", &info1),
+        template_cache_key("rev1", &info2)
+    );
+    assert_ne!(
+        template_cache_key("rev1", &info1),
+        template_cache_key("rev1", &info3)
+    );
+    assert_ne!(
+        template_cache_key("rev1", &info1),
+        template_cache_key("rev2", &info1)
+    );
+}

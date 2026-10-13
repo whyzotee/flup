@@ -25,7 +25,9 @@ pub fn stage_workspace_trees(source: &Path, backup: &Path, stage: &Path) -> Resu
 }
 
 pub fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
-    fs::create_dir(destination).map_err(|e| FlupError::io("cannot create stage", e))?;
+    if !destination.exists() {
+        fs::create_dir_all(destination).map_err(|e| FlupError::io("cannot create directory", e))?;
+    }
 
     for entry in WalkDir::new(source).follow_links(false).min_depth(1) {
         let entry = entry.map_err(|error| {
@@ -54,10 +56,12 @@ fn copy_entry(entry: &DirEntry, target: &Path) -> Result<()> {
     }
 
     if entry.file_type().is_dir() {
-        fs::create_dir(target).map_err(|error| {
-            let context = format!("cannot create {}", target.display());
-            FlupError::io(context, error)
-        })?;
+        if !target.exists() {
+            fs::create_dir_all(target).map_err(|error| {
+                let context = format!("cannot create {}", target.display());
+                FlupError::io(context, error)
+            })?;
+        }
     } else if entry.file_type().is_file() {
         fs::copy(entry.path(), target).map_err(|error| {
             let context = format!("cannot copy {}", target.display());
