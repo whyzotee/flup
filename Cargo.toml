@@ -1,0 +1,18 @@
+[package]
+name = "flup"
+version = "0.1.0"
+edition = "2024"
+description = "Safely upgrade Flutter apps in place with transactional rollback"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/whyzotee/flup"
+keywords = ["flutter", "upgrade", "cli", "tools"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+regex = "1.13.1"
+thiserror = "2.0.21"
+walkdir = "2.5.0"
+tempfile = "3.27.0"
+yaml-rust2 = { version = "0.13.0", default-features = false }
