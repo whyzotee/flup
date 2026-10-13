@@ -53,7 +53,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           branch: main
-          commit_message: "chore(release): update CHANGELOG.md for ${{ github.ref_name }} [skip ci]"
+          commit_message: "chore(release): update CHANGELOG.md for ${{ github.ref_name }}"
           file_pattern: "CHANGELOG.md"
 
       - name: Generate release notes
