@@ -3,6 +3,7 @@ use crate::upgrade::template::Report;
 use crate::upgrade::{UpgradeOutcome, UpgradeStage, UpgradeSummary};
 use std::io::IsTerminal;
 use std::process::ExitCode;
+use std::time::Duration;
 
 const EXIT_CODE_CONFLICTS: u8 = 2;
 
@@ -40,7 +41,23 @@ fn badge(label: &str, bg_style: &str) -> String {
     }
 }
 
-pub fn finish(outcome: Result<UpgradeOutcome>) -> ExitCode {
+pub fn format_duration(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs >= 60 {
+        let mins = secs / 60;
+        let rem_secs = secs % 60;
+        format!("{mins}m {rem_secs:02}s")
+    } else if secs >= 1 {
+        format!("{:.2}s", duration.as_secs_f64())
+    } else if duration.as_millis() > 0 {
+        format!("{}ms", duration.as_millis())
+    } else {
+        format!("{:.2}ms", duration.as_secs_f64() * 1000.0)
+    }
+}
+
+pub fn finish(outcome: Result<UpgradeOutcome>, duration: Duration) -> ExitCode {
+    let duration_str = format_duration(duration);
     match outcome {
         Ok(UpgradeOutcome::Completed {
             summary,
@@ -60,9 +77,10 @@ pub fn finish(outcome: Result<UpgradeOutcome>) -> ExitCode {
                 );
             }
             println!(
-                "{}: {}",
+                "{}: {} in {}",
                 colorize("Upgrade complete", BOLD_GREEN),
-                summary.project.display()
+                summary.project.display(),
+                colorize(&duration_str, BOLD_CYAN)
             );
 
             if !summary.report.coexistence_notices.is_empty() {
@@ -90,9 +108,10 @@ pub fn finish(outcome: Result<UpgradeOutcome>) -> ExitCode {
         }
         Ok(UpgradeOutcome::Conflicts(summary)) => {
             eprintln!(
-                "{}: {} file conflict(s); original project was not changed",
+                "{}: {} file conflict(s); original project was not changed in {}",
                 colorize("flup", BOLD_RED),
-                summary.report.conflicts.len()
+                summary.report.conflicts.len(),
+                colorize(&duration_str, DIM)
             );
             eprintln!(
                 "  {} Run with {} to overwrite conflicting template files",
@@ -102,7 +121,11 @@ pub fn finish(outcome: Result<UpgradeOutcome>) -> ExitCode {
             ExitCode::from(EXIT_CODE_CONFLICTS)
         }
         Err(message) => {
-            eprintln!("{}: {message}", colorize("flup", BOLD_RED));
+            eprintln!(
+                "{}: {message} in {}",
+                colorize("flup", BOLD_RED),
+                colorize(&duration_str, DIM)
+            );
             ExitCode::FAILURE
         }
     }

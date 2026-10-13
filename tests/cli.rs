@@ -24,3 +24,30 @@ fn unknown_command_is_rejected() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
 }
+
+#[test]
+fn format_duration_formats_various_ranges() {
+    use flup::cli::output::format_duration;
+    use std::time::Duration;
+
+    assert_eq!(format_duration(Duration::from_micros(250)), "0.25ms");
+    assert_eq!(format_duration(Duration::from_millis(450)), "450ms");
+    assert_eq!(format_duration(Duration::from_millis(1500)), "1.50s");
+    assert_eq!(format_duration(Duration::from_secs(12)), "12.00s");
+    assert_eq!(
+        format_duration(Duration::from_secs(65) + Duration::from_millis(400)),
+        "1m 05s"
+    );
+}
+
+#[test]
+fn upgrade_reports_elapsed_duration_on_failure() {
+    let output = Command::new(env!("CARGO_BIN_EXE_flup"))
+        .args(["upgrade", "--project", "non-existent-dir-for-test"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot open project"));
+    assert!(stderr.contains(" in "));
+}

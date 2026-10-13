@@ -54,7 +54,8 @@ pub fn run() -> ExitCode {
         force,
     };
 
+    let start_time = std::time::Instant::now();
     let result = upgrade(options, output::print_stage, output::print_summary);
 
-    output::finish(result)
+    output::finish(result, start_time.elapsed())
 }
