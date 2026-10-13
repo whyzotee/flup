@@ -16,8 +16,20 @@ pub fn apply_templates(
     platforms: &[String],
     force: bool,
 ) -> Result<Report> {
-    let old_files = template_files(base, platforms)?;
-    let new_files = template_files(target, platforms)?;
+    let (old_files, new_files) = std::thread::scope(|s| {
+        let old_handle = s.spawn(|| template_files(base, platforms));
+        let new_handle = s.spawn(|| template_files(target, platforms));
+
+        let old = old_handle
+            .join()
+            .map_err(|_| FlupError::Internal("base template reading thread panicked".into()))??;
+        let new = new_handle
+            .join()
+            .map_err(|_| FlupError::Internal("target template reading thread panicked".into()))??;
+
+        Ok::<_, FlupError>((old, new))
+    })?;
+
     let mut paths: BTreeSet<PathBuf> = old_files.keys().cloned().collect();
     paths.extend(new_files.keys().cloned());
 
@@ -189,7 +201,11 @@ fn write_file(path: &Path, content: &[u8]) -> Result<()> {
 
 fn template_files(root: &Path, platforms: &[String]) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
     let mut files = BTreeMap::new();
-    for entry in WalkDir::new(root).follow_links(false) {
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| is_eligible_entry(entry, platforms))
+    {
         let entry = entry.map_err(|error| {
             let message = format!("cannot walk template: {error}");
             FlupError::Template(message)
@@ -216,6 +232,25 @@ fn template_files(root: &Path, platforms: &[String]) -> Result<BTreeMap<PathBuf,
         }
     }
     Ok(files)
+}
+
+fn is_eligible_entry(entry: &walkdir::DirEntry, platforms: &[String]) -> bool {
+    if entry.depth() == 0 {
+        return true;
+    }
+
+    if entry.depth() == 1 {
+        if entry.file_type().is_dir() {
+            return platforms
+                .iter()
+                .any(|platform| entry.file_name() == platform.as_str());
+        }
+        return ROOT_TEMPLATE_FILES
+            .iter()
+            .any(|root_file| entry.file_name() == *root_file);
+    }
+
+    true
 }
 
 fn is_eligible_template_file(relative: &Path, platforms: &[String]) -> bool {
