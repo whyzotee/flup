@@ -115,6 +115,52 @@ impl Edit<'_> {
 }
 
 fn diff<'a>(base: &[&[u8]], changed: &[&'a [u8]], limit: usize) -> Option<Vec<Edit<'a>>> {
+    let mut prefix = 0;
+    while prefix < base.len() && prefix < changed.len() && base[prefix] == changed[prefix] {
+        prefix += 1;
+    }
+
+    if prefix == base.len() && prefix == changed.len() {
+        return Some(Vec::new());
+    }
+
+    let mut suffix = 0;
+    while suffix < (base.len() - prefix)
+        && suffix < (changed.len() - prefix)
+        && base[base.len() - 1 - suffix] == changed[changed.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let mid_base = &base[prefix..base.len() - suffix];
+    let mid_changed = &changed[prefix..changed.len() - suffix];
+
+    if mid_base.is_empty() {
+        return Some(vec![Edit {
+            start: prefix,
+            end: prefix,
+            replacement: mid_changed.to_vec(),
+        }]);
+    }
+
+    if mid_changed.is_empty() {
+        return Some(vec![Edit {
+            start: prefix,
+            end: prefix + mid_base.len(),
+            replacement: Vec::new(),
+        }]);
+    }
+
+    let mut edits = diff_lcs(mid_base, mid_changed, limit)?;
+    for edit in &mut edits {
+        edit.start += prefix;
+        edit.end += prefix;
+    }
+
+    Some(edits)
+}
+
+fn diff_lcs<'a>(base: &[&[u8]], changed: &[&'a [u8]], limit: usize) -> Option<Vec<Edit<'a>>> {
     let rows = base.len().checked_add(1)?;
     let columns = changed.len().checked_add(1)?;
     if rows.checked_mul(columns)? > limit {
