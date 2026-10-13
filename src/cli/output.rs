@@ -186,36 +186,6 @@ fn print_report(report: &Report) {
         }
     }
 
-    if !report.coexistence_notices.is_empty() {
-        println!();
-        println!(
-            "{} {}",
-            badge("NOTE", BG_YELLOW_BLACK),
-            colorize(
-                "Action required - manual configuration migration needed:",
-                BOLD_YELLOW
-            )
-        );
-        for (new_file, old_file) in &report.coexistence_notices {
-            println!(
-                "  {} {} was added alongside existing {}",
-                colorize("*", BOLD_YELLOW),
-                colorize(new_file, BOLD_GREEN),
-                colorize(old_file, YELLOW)
-            );
-            println!(
-                "    {} Compare configurations, migrate custom settings into {},",
-                colorize("->", CYAN),
-                colorize(new_file, BOLD_GREEN)
-            );
-            println!(
-                "       then delete {} before building.",
-                colorize(old_file, BOLD_RED)
-            );
-        }
-        println!();
-    }
-
     let mut counts = Vec::new();
     if !report.updated.is_empty() {
         counts.push(colorize(&format!("{} updated", report.updated.len()), CYAN));
