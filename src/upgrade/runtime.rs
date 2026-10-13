@@ -122,15 +122,6 @@ impl UpgradeBackend for SystemUpgradeBackend {
     ) -> Result<Option<String>> {
         process::create_migration_branch(project, target_version)
     }
-
-    fn commit_project_git(
-        &self,
-        project: &Path,
-        changed_paths: &[PathBuf],
-        target_version: &str,
-    ) -> Result<()> {
-        process::commit_git_changes(project, changed_paths, target_version)
-    }
 }
 
 impl UpgradeWorkspace for Transaction {

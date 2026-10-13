@@ -99,52 +99,6 @@ pub fn create_migration_branch(project: &Path, target_version: &str) -> Result<O
     Ok(Some(branch_name))
 }
 
-pub fn commit_git_changes(
-    project: &Path,
-    changed_paths: &[PathBuf],
-    target_version: &str,
-) -> Result<()> {
-    if !is_git_repository(project) {
-        return Ok(());
-    }
-
-    let mut add_command = Command::new("git");
-    add_command.arg("-C").arg(command_path(project)).arg("add");
-    let changed_set: std::collections::BTreeSet<&PathBuf> = changed_paths.iter().collect();
-    for path in changed_set {
-        add_command.arg(path);
-    }
-    let add_result = add_command
-        .output()
-        .map_err(|e| FlupError::io("cannot stage files for git commit", e))?;
-
-    if !add_result.status.success() {
-        let message = format!(
-            "git add failed:\n{}",
-            String::from_utf8_lossy(&add_result.stderr).trim()
-        );
-        return Err(FlupError::Commit(message));
-    }
-
-    let commit_message = format!("Upgrade Flutter to {target_version}");
-    let commit_result = Command::new("git")
-        .arg("-C")
-        .arg(command_path(project))
-        .args(["commit", "-m", &commit_message])
-        .output()
-        .map_err(|e| FlupError::io("cannot create git commit", e))?;
-
-    if !commit_result.status.success() {
-        let message = format!(
-            "git commit failed:\n{}",
-            String::from_utf8_lossy(&commit_result.stderr).trim()
-        );
-        return Err(FlupError::Commit(message));
-    }
-
-    Ok(())
-}
-
 /// Recreate an older SDK from the target SDK's local Git objects.
 pub fn checkout_sdk_revision(target: &Path, revision: &str, destination: &Path) -> Result<()> {
     let object = Command::new("git")

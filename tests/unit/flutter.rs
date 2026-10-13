@@ -81,7 +81,7 @@ fn sdk_version_prefers_version_file() {
 }
 
 #[test]
-fn git_migration_branch_is_created_and_committed_for_git_project() {
+fn git_migration_branch_is_created_for_git_project() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("my_app");
     fs::create_dir_all(&project).unwrap();
@@ -97,19 +97,11 @@ fn git_migration_branch_is_created_and_committed_for_git_project() {
         .unwrap();
     assert_eq!(branch, "migrate-to-flutter-3.27.1");
 
-    fs::write(project.join("pubspec.yaml"), "name: my_app\n# upgraded\n").unwrap();
-    flup::flutter::process::commit_git_changes(
-        &project,
-        &[std::path::PathBuf::from("pubspec.yaml")],
-        "3.27.1",
-    )
-    .unwrap();
-
     let current_branch = git(&project, &["branch", "--show-current"]);
     assert_eq!(current_branch, "migrate-to-flutter-3.27.1");
 
     let last_commit = git(&project, &["log", "-1", "--pretty=%B"]);
-    assert_eq!(last_commit, "Upgrade Flutter to 3.27.1");
+    assert_eq!(last_commit, "initial");
 }
 
 #[test]

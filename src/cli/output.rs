@@ -71,7 +71,7 @@ pub fn finish(outcome: Result<UpgradeOutcome>, duration: Duration) -> ExitCode {
             }
             if let Some(branch) = git_branch {
                 println!(
-                    "{}: committed changes to branch {}",
+                    "{}: switched to branch {}",
                     colorize("git", BOLD_GREEN),
                     colorize(&branch, BOLD_CYAN)
                 );

@@ -103,14 +103,6 @@ pub trait UpgradeBackend {
     ) -> Result<Option<String>> {
         Ok(None)
     }
-    fn commit_project_git(
-        &self,
-        _project: &Path,
-        _changed_paths: &[PathBuf],
-        _target_version: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 pub trait UpgradeWorkspace {
@@ -192,9 +184,6 @@ pub fn upgrade_with_backend(
     };
 
     transaction.commit(&changed_paths)?;
-    if git_branch.is_some() {
-        backend.commit_project_git(&project, &changed_paths, &target_version)?;
-    }
 
     Ok(UpgradeOutcome::Completed {
         summary,

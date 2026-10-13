@@ -27,7 +27,7 @@ enum Commands {
         /// Flutter SDK matching the project's .metadata revision
         #[arg(long)]
         base_flutter: Option<PathBuf>,
-        /// Do not create a git branch or commit, even if the project is in a Git repository
+        /// Do not create or switch to a git branch, even if the project is in a Git repository
         #[arg(long)]
         no_git: bool,
         /// Force applying Flutter templates, overwriting conflicting files and migrating Groovy to Kotlin DSL
