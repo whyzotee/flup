@@ -161,8 +161,22 @@ fn ensure_unmodified_during_upgrade(
     relative: &Path,
     error_suffix: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let current = read_optional(&project.join(relative))?;
-    let saved = read_optional(&backup.join(relative))?;
+    let project_path = project.join(relative);
+    let backup_path = backup.join(relative);
+
+    let project_len = fs::metadata(&project_path).ok().map(|m| m.len());
+    let backup_len = fs::metadata(&backup_path).ok().map(|m| m.len());
+
+    if project_len != backup_len {
+        let message = format!(
+            "project changed during upgrade at {}{error_suffix}",
+            relative.display()
+        );
+        return Err(FlupError::Commit(message));
+    }
+
+    let current = read_optional(&project_path)?;
+    let saved = read_optional(&backup_path)?;
     if current != saved {
         let message = format!(
             "project changed during upgrade at {}{error_suffix}",
