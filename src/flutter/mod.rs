@@ -119,6 +119,10 @@ fn sdk_root(path: &Path) -> Option<PathBuf> {
 }
 
 fn check_sdk_directory(path: &Path) -> Option<PathBuf> {
+    if !path.is_dir() {
+        return None;
+    }
+
     let root = fs::canonicalize(path).ok()?;
     let has_flutter_tools = root.join("packages/flutter_tools").is_dir();
     let has_flutter_binary = flutter_binary(&root).exists();
