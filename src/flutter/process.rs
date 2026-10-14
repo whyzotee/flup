@@ -1,12 +1,14 @@
 use crate::error::{FlupError, Result};
 use crate::flutter::flutter_binary;
-use crate::storage::tree_copy::copy_tree;
+use crate::storage::template_store::{
+    MAX_CACHED_TEMPLATES, instantiate_cached_template, store_cached_template,
+};
 use crate::upgrade::project::ProjectInfo;
+use crate::upgrade::template::{TemplateParameters, canonical_project_info};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn sdk_revision(root: &Path) -> Result<String> {
     let output = Command::new("git")
@@ -101,8 +103,8 @@ pub fn create_migration_branch(project: &Path, target_version: &str) -> Result<O
     Ok(Some(branch_name))
 }
 
-/// Recreate an older SDK from the target SDK's local Git objects.
-pub fn checkout_sdk_revision(target: &Path, revision: &str, destination: &Path) -> Result<()> {
+/// Verify that `revision` exists as a commit in `target`'s local Git object store.
+pub fn verify_sdk_revision_in_history(target: &Path, revision: &str) -> Result<()> {
     let object = Command::new("git")
         .arg("-C")
         .arg(command_path(target))
@@ -117,6 +119,13 @@ pub fn checkout_sdk_revision(target: &Path, revision: &str, destination: &Path) 
         );
         return Err(FlupError::Sdk(message));
     }
+
+    Ok(())
+}
+
+/// Recreate an older SDK from the target SDK's local Git objects.
+pub fn checkout_sdk_revision(target: &Path, revision: &str, destination: &Path) -> Result<()> {
+    verify_sdk_revision_in_history(target, revision)?;
 
     let clone = Command::new("git")
         .current_dir(target)
@@ -197,15 +206,15 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// Compute a reusable cache key from the SDK revision, platforms, and native language options.
+/// Project name and organization are excluded because cached templates use canonical placeholders.
 pub fn template_cache_key(revision: &str, info: &ProjectInfo) -> String {
     let mut sorted_platforms = info.platforms.clone();
     sorted_platforms.sort();
 
     let key_string = format!(
-        "{}:{}:{}:{}:{}:{}",
+        "v2:{}:{}:{}:{}",
         revision,
-        info.name,
-        info.organization,
         sorted_platforms.join(","),
         info.android_language.as_deref().unwrap_or(""),
         info.ios_language.as_deref().unwrap_or("")
@@ -251,54 +260,101 @@ fn template_cache_root() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".flup").join("templates"))
 }
 
-fn unique_temp_cache_name(prefix: &str) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    format!(".tmp-{prefix}-{pid}-{now}")
-}
-
-fn store_template_cache(source: &Path, cached_dir: &Path) {
-    if cached_dir.exists() {
-        return;
-    }
-    let Some(parent) = cached_dir.parent() else {
-        return;
-    };
-    if fs::create_dir_all(parent).is_err() {
-        return;
+/// Generate the base template for `info.revision`, checking out `base_sdk` from `target_sdk`
+/// only when the template is not already cached and `base_sdk` does not exist yet.
+pub fn generate_base_template(
+    base_sdk: &Path,
+    target_sdk: &Path,
+    output: &Path,
+    info: &ProjectInfo,
+) -> Result<()> {
+    if try_restore_cached_template(&info.revision, info, output, base_sdk) {
+        return Ok(());
     }
 
-    let temp_name = unique_temp_cache_name("template");
-    let temp_path = parent.join(temp_name);
-
-    if copy_tree(source, &temp_path).is_ok() {
-        if fs::rename(&temp_path, cached_dir).is_err() {
-            let _ = fs::remove_dir_all(&temp_path);
-        }
-    } else {
-        let _ = fs::remove_dir_all(&temp_path);
+    if !base_sdk.exists() {
+        checkout_sdk_revision(target_sdk, &info.revision, base_sdk)?;
     }
+
+    generate_template_for_revision(base_sdk, Some(&info.revision), output, info)
 }
 
 pub fn generate_template(sdk: &Path, output: &Path, info: &ProjectInfo) -> Result<()> {
-    // 1. Try local template cache
-    if let (Ok(revision), Some(cache_root)) = (sdk_revision(sdk), template_cache_root()) {
-        let key = template_cache_key(&revision, info);
-        let cached_dir = cache_root.join(key);
-        if verify_template_output(&cached_dir, &info.platforms, sdk).is_ok() {
-            if copy_tree(&cached_dir, output).is_ok()
-                && verify_template_output(output, &info.platforms, sdk).is_ok()
-            {
-                return Ok(());
-            }
-            let _ = fs::remove_dir_all(output);
-        }
+    let revision = sdk_revision(sdk).ok();
+    generate_template_for_revision(sdk, revision.as_deref(), output, info)
+}
+
+fn generate_template_for_revision(
+    sdk: &Path,
+    revision: Option<&str>,
+    output: &Path,
+    info: &ProjectInfo,
+) -> Result<()> {
+    if let Some(rev) = revision
+        && try_restore_cached_template(rev, info, output, sdk)
+    {
+        return Ok(());
     }
 
-    // 2. Cache miss: run flutter create
+    if let (Some(rev), Some(cache_root)) = (revision, template_cache_root()) {
+        let canonical_info = canonical_project_info(info);
+        let canonical_dir = canonical_staging_path(output);
+        let _ = fs::remove_dir_all(&canonical_dir);
+
+        run_flutter_create(sdk, &canonical_dir, &canonical_info)?;
+        verify_template_output(&canonical_dir, &info.platforms, sdk)?;
+
+        let cached_dir = cache_root.join(template_cache_key(rev, info));
+        store_cached_template(&canonical_dir, &cached_dir, MAX_CACHED_TEMPLATES);
+
+        let params = TemplateParameters::from_project(info);
+        let instantiate_res = instantiate_cached_template(&canonical_dir, output, &params);
+        let _ = fs::remove_dir_all(&canonical_dir);
+        instantiate_res?;
+
+        verify_template_output(output, &info.platforms, sdk)?;
+        return Ok(());
+    }
+
+    run_flutter_create(sdk, output, info)?;
+    verify_template_output(output, &info.platforms, sdk)
+}
+
+fn try_restore_cached_template(
+    revision: &str,
+    info: &ProjectInfo,
+    output: &Path,
+    sdk_for_error: &Path,
+) -> bool {
+    let Some(cache_root) = template_cache_root() else {
+        return false;
+    };
+    let key = template_cache_key(revision, info);
+    let cached_dir = cache_root.join(key);
+    if verify_template_output(&cached_dir, &info.platforms, sdk_for_error).is_err() {
+        return false;
+    }
+
+    let params = TemplateParameters::from_project(info);
+    if instantiate_cached_template(&cached_dir, output, &params).is_ok()
+        && verify_template_output(output, &info.platforms, sdk_for_error).is_ok()
+    {
+        return true;
+    }
+
+    let _ = fs::remove_dir_all(output);
+    false
+}
+
+fn canonical_staging_path(output: &Path) -> PathBuf {
+    let name = output
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("template");
+    output.with_file_name(format!("{name}-canonical"))
+}
+
+fn run_flutter_create(sdk: &Path, output: &Path, info: &ProjectInfo) -> Result<()> {
     let args = build_template_args(info, output);
     let result = Command::new(flutter_binary(sdk))
         .env("FLUTTER_SUPPRESS_ANALYTICS", "true")
@@ -316,16 +372,6 @@ pub fn generate_template(sdk: &Path, output: &Path, info: &ProjectInfo) -> Resul
         );
         return Err(FlupError::Template(message));
     }
-
-    verify_template_output(output, &info.platforms, sdk)?;
-
-    // 3. Cache the verified template for subsequent runs
-    if let (Ok(revision), Some(cache_root)) = (sdk_revision(sdk), template_cache_root()) {
-        let key = template_cache_key(&revision, info);
-        let cached_dir = cache_root.join(key);
-        store_template_cache(output, &cached_dir);
-    }
-
     Ok(())
 }
 

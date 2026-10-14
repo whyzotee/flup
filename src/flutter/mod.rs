@@ -37,6 +37,36 @@ pub fn prepare_base_sdk(
     explicit: Option<&Path>,
     workspace: &Path,
 ) -> Result<PathBuf> {
+    if let Some(root) = find_installed_base_sdk(project, revision, explicit)? {
+        return Ok(root);
+    }
+
+    process::checkout_sdk_revision(target_sdk, revision, workspace)?;
+    required_sdk_root(workspace)
+}
+
+/// Resolve an installed base SDK or verify that `revision` exists in `target_sdk` local Git history,
+/// deferring the working-tree checkout into `workspace` until a template cache miss occurs.
+pub fn prepare_lazy_base_sdk(
+    project: &Path,
+    target_sdk: &Path,
+    revision: &str,
+    explicit: Option<&Path>,
+    workspace: &Path,
+) -> Result<PathBuf> {
+    if let Some(root) = find_installed_base_sdk(project, revision, explicit)? {
+        return Ok(root);
+    }
+
+    process::verify_sdk_revision_in_history(target_sdk, revision)?;
+    Ok(workspace.to_path_buf())
+}
+
+fn find_installed_base_sdk(
+    project: &Path,
+    revision: &str,
+    explicit: Option<&Path>,
+) -> Result<Option<PathBuf>> {
     if let Some(path) = explicit {
         let root = required_sdk_root(path)?;
         let actual_revision = sdk_revision(&root)?;
@@ -46,7 +76,7 @@ pub fn prepare_base_sdk(
             return Err(FlupError::Sdk(message));
         }
 
-        return Ok(root);
+        return Ok(Some(root));
     }
 
     for path in sdk_candidates(Some(project)) {
@@ -57,12 +87,11 @@ pub fn prepare_base_sdk(
         let revision_matches = sdk_revision(&root).ok().as_deref() == Some(revision);
 
         if revision_matches {
-            return Ok(root);
+            return Ok(Some(root));
         }
     }
 
-    process::checkout_sdk_revision(target_sdk, revision, workspace)?;
-    required_sdk_root(workspace)
+    Ok(None)
 }
 
 fn sdk_candidates(project: Option<&Path>) -> Vec<PathBuf> {

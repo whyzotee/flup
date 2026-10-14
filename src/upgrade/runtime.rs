@@ -46,7 +46,7 @@ impl UpgradeBackend for SystemUpgradeBackend {
         explicit: Option<&Path>,
         workspace: &Path,
     ) -> Result<PathBuf> {
-        flutter::prepare_base_sdk(project, target_sdk, revision, explicit, workspace)
+        flutter::prepare_lazy_base_sdk(project, target_sdk, revision, explicit, workspace)
     }
 
     fn begin_workspace(&self, project: &Path) -> Result<Self::Workspace> {
@@ -66,7 +66,9 @@ impl UpgradeBackend for SystemUpgradeBackend {
         info: &ProjectInfo,
     ) -> Result<()> {
         std::thread::scope(|s| {
-            let base_handle = s.spawn(|| process::generate_template(base_sdk, old_template, info));
+            let base_handle = s.spawn(|| {
+                process::generate_base_template(base_sdk, target_sdk, old_template, info)
+            });
             let target_handle =
                 s.spawn(|| process::generate_template(target_sdk, new_template, info));
 

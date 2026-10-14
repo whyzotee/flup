@@ -115,7 +115,7 @@ fn git_migration_branch_is_skipped_when_not_a_git_repository() {
 }
 
 #[test]
-fn template_cache_key_is_deterministic_and_sensitive_to_parameters() {
+fn template_cache_key_is_reusable_across_projects_and_sensitive_to_sdk_options() {
     use flup::flutter::process::template_cache_key;
     use flup::upgrade::project::ProjectInfo;
 
@@ -124,36 +124,75 @@ fn template_cache_key_is_deterministic_and_sensitive_to_parameters() {
         revision: "rev1".into(),
         platforms: vec!["android".into(), "ios".into()],
         organization: "com.example".into(),
-        android_language: None,
-        ios_language: None,
+        android_language: Some("kotlin".into()),
+        ios_language: Some("swift".into()),
     };
-    let info2 = ProjectInfo {
+    let info_reordered_platforms = ProjectInfo {
         name: "my_app".into(),
         revision: "rev1".into(),
         platforms: vec!["ios".into(), "android".into()],
         organization: "com.example".into(),
-        android_language: None,
-        ios_language: None,
+        android_language: Some("kotlin".into()),
+        ios_language: Some("swift".into()),
     };
-    let info3 = ProjectInfo {
+    let info_different_name_and_org = ProjectInfo {
         name: "other_app".into(),
         revision: "rev1".into(),
         platforms: vec!["android".into(), "ios".into()],
+        organization: "org.acme.product".into(),
+        android_language: Some("kotlin".into()),
+        ios_language: Some("swift".into()),
+    };
+    let info_different_language = ProjectInfo {
+        name: "my_app".into(),
+        revision: "rev1".into(),
+        platforms: vec!["android".into(), "ios".into()],
         organization: "com.example".into(),
-        android_language: None,
-        ios_language: None,
+        android_language: Some("java".into()),
+        ios_language: Some("swift".into()),
     };
 
     assert_eq!(
         template_cache_key("rev1", &info1),
-        template_cache_key("rev1", &info2)
+        template_cache_key("rev1", &info_reordered_platforms)
+    );
+    assert_eq!(
+        template_cache_key("rev1", &info1),
+        template_cache_key("rev1", &info_different_name_and_org)
     );
     assert_ne!(
         template_cache_key("rev1", &info1),
-        template_cache_key("rev1", &info3)
+        template_cache_key("rev1", &info_different_language)
     );
     assert_ne!(
         template_cache_key("rev1", &info1),
         template_cache_key("rev2", &info1)
     );
+}
+
+#[test]
+fn lazy_base_sdk_validates_history_without_cloning_working_tree() {
+    use flup::flutter::prepare_lazy_base_sdk;
+
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = fs::canonicalize(temp.path()).unwrap();
+    let target = workspace.join("target-sdk");
+    let base = workspace.join("base-sdk");
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("marker"), "old").unwrap();
+
+    git(&target, &["init", "--quiet"]);
+    git(&target, &["config", "user.name", "Flup Test"]);
+    git(&target, &["config", "user.email", "flup@example.test"]);
+    git(&target, &["add", "."]);
+    git(&target, &["commit", "--quiet", "-m", "base"]);
+    let base_revision = git(&target, &["rev-parse", "HEAD"]);
+
+    fs::write(target.join("marker"), "new").unwrap();
+    git(&target, &["add", "marker"]);
+    git(&target, &["commit", "--quiet", "-m", "target"]);
+
+    let resolved = prepare_lazy_base_sdk(&workspace, &target, &base_revision, None, &base).unwrap();
+    assert_eq!(resolved, base);
+    assert!(!base.exists());
 }
