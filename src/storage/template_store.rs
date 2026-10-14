@@ -1,13 +1,24 @@
 use crate::error::{FlupError, Result};
 use crate::storage::fs_util::read_optional;
-use crate::upgrade::template::{ConflictPreview, FileDecision, Report, decide_file};
+use crate::upgrade::template::{
+    ConflictPreview, FileDecision, Report, TemplateParameters, decide_file,
+};
 use crate::upgrade::text_merge::diff_preview;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 const ROOT_TEMPLATE_FILES: [&str; 2] = ["analysis_options.yaml", ".gitignore"];
+const NON_TEMPLATE_ENTRIES: [&str; 6] =
+    ["lib", "test", ".dart_tool", ".idea", "build", "README.md"];
+const CACHE_ACCESS_MARKER: &str = ".flup-last-used";
+const STALE_TEMP_MAX_AGE: Duration = Duration::from_secs(600);
+pub const MAX_CACHED_TEMPLATES: usize = 16;
+
+static CACHE_CLOCK_SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub fn apply_templates(
     base: &Path,
@@ -272,4 +283,221 @@ fn is_eligible_template_file(relative: &Path, platforms: &[String]) -> bool {
 
 fn normalize_display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+/// Instantiate a canonical cached template into `output` using the target project's parameters.
+pub fn instantiate_cached_template(
+    cached_dir: &Path,
+    output: &Path,
+    params: &TemplateParameters,
+) -> Result<()> {
+    touch_cache_entry(cached_dir);
+
+    for entry in WalkDir::new(cached_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !is_stripped_cache_entry(entry))
+    {
+        let entry = entry.map_err(|error| {
+            let message = format!("cannot walk cached template: {error}");
+            FlupError::Template(message)
+        })?;
+        if entry.depth() == 0 {
+            fs::create_dir_all(output).map_err(|error| {
+                FlupError::io(format!("cannot create {}", output.display()), error)
+            })?;
+            continue;
+        }
+        if entry.file_name() == CACHE_ACCESS_MARKER {
+            continue;
+        }
+
+        let relative = entry.path().strip_prefix(cached_dir).map_err(|error| {
+            FlupError::Internal(format!("cached template path is outside root: {error}"))
+        })?;
+        let target_relative = params.instantiate_relative_path(relative);
+        let destination = output.join(&target_relative);
+
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&destination).map_err(|error| {
+                FlupError::io(format!("cannot create {}", destination.display()), error)
+            })?;
+            continue;
+        }
+
+        if entry.file_type().is_file() {
+            let raw = fs::read(entry.path()).map_err(|error| {
+                FlupError::io(format!("cannot read {}", entry.path().display()), error)
+            })?;
+            let rendered = params.instantiate_content(&target_relative, &raw);
+            write_file(&destination, &rendered)?;
+
+            if let Ok(metadata) = entry.metadata() {
+                let _ = fs::set_permissions(&destination, metadata.permissions());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Store a canonical template into `cached_dir`, stripping non-template directories and pruning old entries.
+pub fn store_cached_template(source: &Path, cached_dir: &Path, max_entries: usize) {
+    let Some(cache_root) = cached_dir.parent() else {
+        return;
+    };
+    if fs::create_dir_all(cache_root).is_err() {
+        return;
+    }
+
+    if cached_dir.exists() {
+        touch_cache_entry(cached_dir);
+        prune_template_cache(cache_root, max_entries);
+        return;
+    }
+
+    let temp_path = cache_root.join(unique_temp_cache_name("template"));
+    if copy_filtered_template(source, &temp_path).is_ok() {
+        touch_cache_entry(&temp_path);
+        if fs::rename(&temp_path, cached_dir).is_err() {
+            let _ = fs::remove_dir_all(&temp_path);
+        }
+    } else {
+        let _ = fs::remove_dir_all(&temp_path);
+    }
+
+    prune_template_cache(cache_root, max_entries);
+}
+
+fn copy_filtered_template(source: &Path, destination: &Path) -> Result<()> {
+    for entry in WalkDir::new(source)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| !is_stripped_cache_entry(entry))
+    {
+        let entry = entry.map_err(|error| {
+            FlupError::Template(format!("cannot walk generated template: {error}"))
+        })?;
+        let relative = entry.path().strip_prefix(source).map_err(|error| {
+            FlupError::Internal(format!("template path is outside root: {error}"))
+        })?;
+        let target = destination.join(relative);
+
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target).map_err(|error| {
+                FlupError::io(format!("cannot create {}", target.display()), error)
+            })?;
+            continue;
+        }
+
+        if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    FlupError::io(format!("cannot create {}", parent.display()), error)
+                })?;
+            }
+            fs::copy(entry.path(), &target).map_err(|error| {
+                FlupError::io(format!("cannot copy {}", target.display()), error)
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn is_stripped_cache_entry(entry: &walkdir::DirEntry) -> bool {
+    entry.depth() == 1
+        && NON_TEMPLATE_ENTRIES
+            .iter()
+            .any(|name| entry.file_name() == *name)
+}
+
+/// Record recent access on a cached template directory for LRU eviction.
+pub fn touch_cache_entry(cached_dir: &Path) {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = CACHE_CLOCK_SEQ.fetch_add(1, Ordering::Relaxed) as u128;
+    let stamp = format!("{nanos:032}:{seq:016}");
+    let _ = fs::write(cached_dir.join(CACHE_ACCESS_MARKER), stamp);
+}
+
+/// Evict least-recently-used template cache directories so the cache never exceeds `max_entries`.
+pub fn prune_template_cache(cache_root: &Path, max_entries: usize) {
+    let Ok(read_dir) = fs::read_dir(cache_root) else {
+        return;
+    };
+
+    let now = SystemTime::now();
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
+
+    for entry in read_dir.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        if name_str.starts_with(".tmp-") {
+            let is_stale = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age > STALE_TEMP_MAX_AGE);
+            if is_stale {
+                let _ = fs::remove_dir_all(&path);
+            }
+            continue;
+        }
+
+        if name_str.starts_with('.') {
+            continue;
+        }
+
+        let sort_key = read_cache_access_key(&path);
+        entries.push((sort_key, path));
+    }
+
+    if entries.len() <= max_entries {
+        return;
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let remove_count = entries.len() - max_entries;
+    for (_, path) in entries.into_iter().take(remove_count) {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+fn read_cache_access_key(cached_dir: &Path) -> String {
+    if let Ok(marker) = fs::read_to_string(cached_dir.join(CACHE_ACCESS_MARKER)) {
+        let trimmed = marker.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    let nanos = fs::metadata(cached_dir)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:032}:0000000000000000")
+}
+
+fn unique_temp_cache_name(prefix: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = CACHE_CLOCK_SEQ.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    format!(".tmp-{prefix}-{pid}-{now}-{seq}")
 }

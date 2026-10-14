@@ -1,5 +1,9 @@
-use flup::storage::template_store::apply_templates;
-use flup::upgrade::template::{FileDecision, decide_file};
+use flup::storage::template_store::{
+    apply_templates, instantiate_cached_template, prune_template_cache, store_cached_template,
+    touch_cache_entry,
+};
+use flup::upgrade::project::ProjectInfo;
+use flup::upgrade::template::{FileDecision, TemplateParameters, decide_file};
 use flup::upgrade::text_merge::merge_text;
 use std::fs;
 use std::path::Path;
@@ -244,4 +248,93 @@ fn coexistence_ignores_unrelated_prefix_matches_and_detects_format_migration() {
             "android/MainActivity.java".into()
         )]
     );
+}
+
+#[test]
+fn template_parameters_match_flutter_identifier_rules_and_instantiate_templates() {
+    let info = ProjectInfo {
+        name: "my_super_app".to_string(),
+        revision: "rev".to_string(),
+        platforms: vec!["android".into(), "ios".into()],
+        organization: "com.when.in-company".to_string(),
+        android_language: Some("kotlin".to_string()),
+        ios_language: Some("swift".to_string()),
+    };
+    let params = TemplateParameters::from_project(&info);
+    assert_eq!(params.project_name, "my_super_app");
+    assert_eq!(params.title_case_name, "My Super App");
+    assert_eq!(params.android_identifier, "com.when.incompany.my_super_app");
+    assert_eq!(
+        params.kotlin_android_identifier,
+        "com.`when`.incompany.my_super_app"
+    );
+    assert_eq!(params.apple_identifier, "com.when.in-company.mySuperApp");
+
+    let temp = tempfile::tempdir().unwrap();
+    let cached = temp.path().join("cached");
+    let dest = temp.path().join("dest");
+
+    write(
+        &cached,
+        "android/app/src/main/kotlin/com/flup/templateplaceholder/flup_template_placeholder/MainActivity.kt",
+        "package com.flup.templateplaceholder.flup_template_placeholder\n",
+    );
+    write(
+        &cached,
+        "ios/Runner.xcodeproj/project.pbxproj",
+        "PRODUCT_BUNDLE_IDENTIFIER = com.flup.templateplaceholder.flupTemplatePlaceholder;\nINFOPLIST_KEY_CFBundleDisplayName = \"Flup Template Placeholder\";\n",
+    );
+
+    instantiate_cached_template(&cached, &dest, &params).unwrap();
+
+    let kt_path =
+        dest.join("android/app/src/main/kotlin/com/when/incompany/my_super_app/MainActivity.kt");
+    assert_eq!(
+        fs::read_to_string(kt_path).unwrap(),
+        "package com.`when`.incompany.my_super_app\n"
+    );
+
+    let pbx_path = dest.join("ios/Runner.xcodeproj/project.pbxproj");
+    assert_eq!(
+        fs::read_to_string(pbx_path).unwrap(),
+        "PRODUCT_BUNDLE_IDENTIFIER = com.when.in-company.mySuperApp;\nINFOPLIST_KEY_CFBundleDisplayName = \"My Super App\";\n"
+    );
+}
+
+#[test]
+fn store_cached_template_strips_non_template_entries_and_prunes_lru() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache_root = temp.path().join("cache");
+    let raw_template = temp.path().join("raw");
+
+    write(&raw_template, "android/build.gradle", "build");
+    write(&raw_template, "lib/main.dart", "void main() {}");
+    write(&raw_template, "test/widget_test.dart", "void main() {}");
+    write(&raw_template, "README.md", "# Readme");
+    write(&raw_template, ".gitignore", "/build/");
+
+    let entry1 = cache_root.join("entry-1");
+    let entry2 = cache_root.join("entry-2");
+    let entry3 = cache_root.join("entry-3");
+
+    store_cached_template(&raw_template, &entry1, 2);
+    assert!(entry1.join("android/build.gradle").exists());
+    assert!(entry1.join(".gitignore").exists());
+    assert!(!entry1.join("lib").exists());
+    assert!(!entry1.join("test").exists());
+    assert!(!entry1.join("README.md").exists());
+
+    store_cached_template(&raw_template, &entry2, 2);
+    // Touch entry1 so entry2 becomes the least-recently-used entry
+    touch_cache_entry(&entry1);
+    store_cached_template(&raw_template, &entry3, 2);
+
+    prune_template_cache(&cache_root, 2);
+
+    assert!(entry1.exists(), "recently touched entry1 should be kept");
+    assert!(
+        !entry2.exists(),
+        "least-recently-used entry2 should be evicted"
+    );
+    assert!(entry3.exists(), "newest entry3 should be kept");
 }
