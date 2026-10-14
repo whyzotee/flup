@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-10-14
+
+### 🚀 Features
+
+- *(cli)* Report elapsed execution time from start to finish ([04f7511](https://github.com/whyzotee/flup/commit/04f7511427871b083de342ed08a7f880067aebbf))
+- *(git)* Switch to migration branch without committing changes automatically ([a8cc972](https://github.com/whyzotee/flup/commit/a8cc9724b0ab9276d7b2d901669330768202c837))
+
+### 🚜 Refactor
+
+- *(cli)* Remove duplicate coexistence migration note from template report ([81c7309](https://github.com/whyzotee/flup/commit/81c73094d02832b140f7c1bf48399e07501c0dc8))
+
+### ⚡ Performance
+
+- *(merge)* Optimize diff with prefix/suffix trimming and early exits ([e452673](https://github.com/whyzotee/flup/commit/e452673acb8d7b17f87dbace2a3a468c1dcfa2e2))
+- *(template)* Prune non-platform dirs and read templates in parallel ([7a47f15](https://github.com/whyzotee/flup/commit/7a47f152176b7edc26acbf9e1f887fac6b758a3d))
+- *(transaction)* Stage workspace backup and stage in a single pass ([a9c209a](https://github.com/whyzotee/flup/commit/a9c209aee13547eb7c02729947fd74d712f8feac))
+- *(sdk)* Check directory existence before canonicalizing sdk paths ([5da1900](https://github.com/whyzotee/flup/commit/5da190029c56a0ed10bfdfd9cb93bf138067e2d8))
+- *(commit)* Fast-path file comparison using metadata length check ([712b056](https://github.com/whyzotee/flup/commit/712b05605f9f14e755af38b010c6406d2641c8dc))
+- *(template)* Cache generated flutter templates locally for instant reuse ([ef8e406](https://github.com/whyzotee/flup/commit/ef8e406a8fdb26e7cac650449438fa1c447c8781))
+- *(template)* Add parameterized template instantiation and LRU cache eviction ([5e95077](https://github.com/whyzotee/flup/commit/5e95077f60525367c183b04c99635eb258c3d67b))
+- *(sdk)* Reuse canonical template cache across projects and defer base sdk checkout ([27831a2](https://github.com/whyzotee/flup/commit/27831a259b61b2a521007c0ca2a7e462d395c089))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(release)* Update CHANGELOG.md for v0.1.0 [skip ci] ([479a5f4](https://github.com/whyzotee/flup/commit/479a5f4566db4eedf890faa8d8f266ceea35f0c7))
+- *(release)* Remove [skip ci] from changelog commit message ([309a3db](https://github.com/whyzotee/flup/commit/309a3dbe79dc2e5b775ad6f69f2bba930bc14964))
+- *(release)* Bump version to 0.2.0 ([cfa31a3](https://github.com/whyzotee/flup/commit/cfa31a3f8053af5d3620eb5105ecfb4efaad67ec))
 ## [0.1.0] - 2026-10-13
 
 ### 🚀 Features
