@@ -49,19 +49,20 @@ jobs:
         env:
           OUTPUT: CHANGELOG.md
 
-      - name: Update repository CHANGELOG.md
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          branch: main
-          commit_message: "chore(release): update CHANGELOG.md for ${{ github.ref_name }}"
-          file_pattern: "CHANGELOG.md"
-
       - name: Generate release notes
         id: release_notes
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: --verbose --latest --strip header
+
+      - name: Update repository CHANGELOG.md
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          branch: main
+          commit_message: "chore(release): update CHANGELOG.md for ${{ github.ref_name }}"
+          file_pattern: "CHANGELOG.md"
+          skip_fetch: true
 
       - name: Update Release note
         uses: softprops/action-gh-release@v3
