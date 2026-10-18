@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-10-18
+
+### 🚀 Features
+
+- *(cli)* Show elapsed time inline for each upgrade step ([f00b352](https://github.com/whyzotee/flup/commit/f00b352d1cf9d3600709878a725a83101c2b1cdf))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(release)* Update CHANGELOG.md for v0.2.0 ([281842d](https://github.com/whyzotee/flup/commit/281842d50e869a7629c784cc07d0b915d5d0d7ab))
+- *(release)* Generate release notes before auto-committing changelog ([718159f](https://github.com/whyzotee/flup/commit/718159ff69087916ecc1b9770c0d44c8961023b1))
+- *(release)* Bump version to 0.3.0 ([799dc6f](https://github.com/whyzotee/flup/commit/799dc6fae38cd9b2e22f598265ddd50625e00bff))
 ## [0.2.0] - 2026-10-14
 
 ### 🚀 Features
