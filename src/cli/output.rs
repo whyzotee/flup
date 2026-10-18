@@ -1,9 +1,9 @@
 use crate::error::Result;
 use crate::upgrade::template::Report;
 use crate::upgrade::{UpgradeOutcome, UpgradeStage, UpgradeSummary};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const EXIT_CODE_CONFLICTS: u8 = 2;
 
@@ -131,8 +131,28 @@ pub fn finish(outcome: Result<UpgradeOutcome>, duration: Duration) -> ExitCode {
     }
 }
 
-pub fn print_stage(stage: UpgradeStage) {
-    let (icon, text) = match stage {
+#[derive(Default)]
+pub struct StageProgress {
+    current: Option<(UpgradeStage, Instant)>,
+}
+
+impl StageProgress {
+    pub fn start(&mut self, stage: UpgradeStage) {
+        self.finish();
+        print_stage(stage);
+        self.current = Some((stage, Instant::now()));
+    }
+
+    /// Close the active timer even when the upgrade returns a conflict or error.
+    pub fn finish(&mut self) {
+        if let Some((_, started)) = self.current.take() {
+            println!(" ({})", colorize(&format_duration(started.elapsed()), DIM));
+        }
+    }
+}
+
+fn stage_details(stage: UpgradeStage) -> (&'static str, &'static str) {
+    match stage {
         UpgradeStage::Staging => ("[1/4]", "Staging complete project copy..."),
         UpgradeStage::GeneratingTemplates => ("[2/4]", "Generating Flutter templates..."),
         UpgradeStage::UpgradingDependencies => {
@@ -142,8 +162,13 @@ pub fn print_stage(stage: UpgradeStage) {
             "[4/4]",
             "Applying verified changes to the original project...",
         ),
-    };
-    println!("{} {}", colorize(icon, BOLD_CYAN), colorize(text, BOLD));
+    }
+}
+
+pub fn print_stage(stage: UpgradeStage) {
+    let (icon, text) = stage_details(stage);
+    print!("{} {}", colorize(icon, BOLD_CYAN), colorize(text, BOLD));
+    let _ = std::io::stdout().flush();
 }
 
 pub fn print_summary(summary: &UpgradeSummary) {

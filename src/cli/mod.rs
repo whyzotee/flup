@@ -55,7 +55,16 @@ pub fn run() -> ExitCode {
     };
 
     let start_time = std::time::Instant::now();
-    let result = upgrade(options, output::print_stage, output::print_summary);
+    let progress = std::cell::RefCell::new(output::StageProgress::default());
+    let result = upgrade(
+        options,
+        |stage| progress.borrow_mut().start(stage),
+        |summary| {
+            progress.borrow_mut().finish();
+            output::print_summary(summary);
+        },
+    );
+    progress.borrow_mut().finish();
 
     output::finish(result, start_time.elapsed())
 }
