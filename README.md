@@ -1,6 +1,6 @@
 # Flup a safe in-place Flutter project upgrade tool.
 
-Upgrade a Flutter app in place after making a complete temporary copy.
+Upgrade a Flutter app in place after making a temporary backup and working copy.
 
 ### Requirements
 
@@ -38,12 +38,12 @@ flup uses that SDK as the target; it does not download the latest Flutter releas
 
 During the upgrade, flup:
 
-1. Creates a complete backup and working copy in a temporary directory beside the app.
+1. Creates a backup and working copy beside the app, skipping rebuildable output such as `build/`, `.dart_tool/`, Gradle cache/build directories, and platform `ephemeral/` directories. Original files are left in place.
 2. Compares the old and target Flutter templates, preserves customizations, and merges independent edits.
 3. Runs `flutter pub upgrade --major-versions` in the working copy. This can change dependency constraints in `pubspec.yaml` and package versions in `pubspec.lock`.
 4. Applies the selected template files, `.metadata`, and dependency files to your app.
 
-Each step shows elapsed time; template details also report cache hits/misses and generation times.
+Each step shows elapsed time. Template work also shows live timers for SDK cloning, template generation or cache loading, and file comparison.
 
 ### `--project <directory>`
 
@@ -63,37 +63,27 @@ flup upgrade --flutter "path/to/target/flutter"
 
 ### `--base-flutter <SDK directory>`
 
-Select the Flutter SDK used as the app's old template baseline. Its Git revision must match the revision in the app's `.metadata` exactly. Use this option if automatic discovery cannot find the old SDK:
+Select the old Flutter SDK if automatic discovery fails. Its Git revision must match the app's `.metadata`:
 
 ```sh
 flup upgrade --flutter "path/to/target/flutter" --base-flutter "path/to/old/flutter"
 ```
 
-The path should point to the old SDK root containing `bin` and `packages`. These options can be combined with `--project`.
-
 ### `--force`
 
-If both your app and Flutter changed the same part of a template file, flup shows the conflicting paths and a preview of each side's edits, then stops before applying changes to your app. Save the preview and use it to decide how to migrate your custom settings.
-
-If you choose to replace conflicting files with the target templates, run:
+Overwrite conflicting files with the target Flutter templates. Custom settings in those files will be replaced; dependency errors still stop the upgrade:
 
 ```sh
 flup upgrade --force
 ```
 
-`--force` overwrites conflicting template files, including custom settings inside those files. It does not bypass dependency failures or project validation. When rerunning, include any `--project`, `--flutter`, and `--base-flutter` options you used originally.
-
-When a dependency upgrade fails, fix the reported dependency or environment problem and rerun; the dependency command runs against the temporary copy. If applying files back fails, flup attempts to restore touched files and prints the retained backup location for recovery.
-
 ### `--no-git`
 
-For a Git repository, flup creates or checks out `migrate-to-flutter-<version>` before applying files. The current implementation leaves changes uncommitted; review and commit them yourself. To skip branch creation and switching, use:
+Apply changes without creating or switching to a migration branch:
 
 ```sh
 flup upgrade --no-git
 ```
-
-`--no-git` still applies changes to your app.
 
 ### `--help`
 
@@ -124,8 +114,6 @@ flutter build <platform> # Test building the app after upgrading
 | `1` | An error occurred; read the error and any recovery instructions. |
 | `2` | Template conflicts require review; no upgrade files were applied. |
 
-Supported projects are Flutter **apps** with a single known base revision available from an installed SDK or the target SDK's local Git history. Path dependencies, pub workspaces, and divergent platform base revisions are not supported.
-
 ## Tested upgrades
 
 | From Flutter | To Flutter | Platform | Result |
@@ -133,7 +121,10 @@ Supported projects are Flutter **apps** with a single known base revision availa
 | 3.16.9 | 3.47 | Android | Upgraded app works |
 | 3.16.9 | 3.47 | iOS | Not tested yet |
 
-Results are from one app; other projects may need additional migration work.
+| Cache | Approx. run time |
+| --- | --- |
+| Without cache | 1m 15s |
+| With cache | 2.51s |
 
 ## Features & Roadmap
 
