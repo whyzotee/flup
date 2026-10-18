@@ -11,7 +11,7 @@ fn write(root: &Path, relative: &str, content: &str) {
 }
 
 #[test]
-fn transaction_stages_full_copy_and_cleans_up() {
+fn transaction_stages_project_files_and_cleans_up() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");
     write(&project, "lib/main.dart", "user code");
@@ -32,6 +32,214 @@ fn transaction_stages_full_copy_and_cleans_up() {
     drop(transaction);
 
     assert!(!root.exists());
+}
+
+#[test]
+fn transaction_excludes_generated_directories_and_preserves_project_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let excluded = [
+        "build",
+        ".dart_tool",
+        "android/.gradle",
+        "android/build",
+        "android/app/build",
+        "ios/Flutter/ephemeral",
+        "macos/Flutter/ephemeral",
+        "windows/flutter/ephemeral",
+        "linux/flutter/ephemeral",
+    ];
+    let retained = [
+        ".git/config",
+        "lib/main.dart",
+        "assets/logo.png",
+        "pubspec.yaml",
+        "pubspec.lock",
+        ".metadata",
+        "android/gradle.properties",
+        "android/app/build.gradle",
+        "android/key.properties",
+        "android/app/release.keystore",
+        "ios/Pods/Manifest.lock",
+        "macos/Pods/Manifest.lock",
+        "ios/Flutter/Debug.xcconfig",
+        "windows/flutter/CMakeLists.txt",
+        "lib/build/user.dart",
+        "lib/.dart_tool/user.dart",
+        "assets/android/build/user.txt",
+        "android/app/src/build/user.txt",
+        "ios/Flutter/ephemeral_notes/user.txt",
+    ];
+    for directory in excluded {
+        write(
+            &project,
+            &format!("{directory}/nested/generated.txt"),
+            directory,
+        );
+    }
+    for relative in retained {
+        write(&project, relative, relative);
+    }
+
+    let transaction = Transaction::begin(&project).unwrap();
+    let workspace_root = transaction
+        .workspace_path("backup")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    for snapshot in [
+        transaction.workspace_path("backup"),
+        transaction.stage_path(),
+    ] {
+        for directory in excluded {
+            assert!(!snapshot.join(directory).exists(), "copied {directory}");
+        }
+        for relative in retained {
+            assert_eq!(
+                fs::read_to_string(snapshot.join(relative)).unwrap(),
+                relative
+            );
+        }
+    }
+    drop(transaction);
+
+    assert!(!workspace_root.exists());
+    for directory in excluded {
+        assert_eq!(
+            fs::read_to_string(project.join(directory).join("nested/generated.txt")).unwrap(),
+            directory
+        );
+    }
+    for relative in retained {
+        assert_eq!(
+            fs::read_to_string(project.join(relative)).unwrap(),
+            relative
+        );
+    }
+}
+
+#[test]
+fn transaction_preserves_regular_files_at_generated_directory_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let paths = [
+        "build",
+        ".dart_tool",
+        "android/.gradle",
+        "android/build",
+        "android/app/build",
+        "ios/Flutter/ephemeral",
+        "macos/Flutter/ephemeral",
+        "windows/flutter/ephemeral",
+        "linux/flutter/ephemeral",
+    ];
+    for relative in paths {
+        write(&project, relative, "user file");
+    }
+
+    let transaction = Transaction::begin(&project).unwrap();
+    for snapshot in [
+        transaction.workspace_path("backup"),
+        transaction.stage_path(),
+    ] {
+        for relative in paths {
+            assert_eq!(
+                fs::read_to_string(snapshot.join(relative)).unwrap(),
+                "user file"
+            );
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn transaction_skips_generated_directory_symlinks_without_touching_targets() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    let generated = temp.path().join("external-build");
+    write(&project, "lib/main.dart", "user code");
+    write(&generated, "artifact.txt", "generated artifact");
+    let link = project.join("build");
+    #[cfg(unix)]
+    let result = std::os::unix::fs::symlink(&generated, &link);
+    #[cfg(windows)]
+    let result = std::os::windows::fs::symlink_dir(&generated, &link);
+    if let Err(error) = result {
+        if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied {
+            return;
+        }
+        panic!("cannot create test symlink: {error}");
+    }
+
+    let transaction = Transaction::begin(&project).unwrap();
+    for snapshot in [
+        transaction.workspace_path("backup"),
+        transaction.stage_path(),
+    ] {
+        assert!(fs::symlink_metadata(snapshot.join("build")).is_err());
+        assert_eq!(
+            fs::read_to_string(snapshot.join("lib/main.dart")).unwrap(),
+            "user code"
+        );
+    }
+    drop(transaction);
+
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read_to_string(generated.join("artifact.txt")).unwrap(),
+        "generated artifact"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn failed_staging_cleans_workspace_without_changing_original_or_generated_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp.path().join("project");
+    write(&project, "lib/main.dart", "user code");
+    write(&project, "build/artifact.txt", "generated artifact");
+    write(temp.path(), "outside.txt", "outside content");
+    let link = project.join("lib/unsupported-link");
+    #[cfg(unix)]
+    let result = std::os::unix::fs::symlink(temp.path().join("outside.txt"), &link);
+    #[cfg(windows)]
+    let result = std::os::windows::fs::symlink_file(temp.path().join("outside.txt"), &link);
+    if let Err(error) = result {
+        if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied {
+            return;
+        }
+        panic!("cannot create test symlink: {error}");
+    }
+
+    assert!(matches!(
+        Transaction::begin(&project),
+        Err(FlupError::InvalidProject(_))
+    ));
+
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    assert_eq!(
+        fs::read_to_string(project.join("lib/main.dart")).unwrap(),
+        "user code"
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("build/artifact.txt")).unwrap(),
+        "generated artifact"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("outside.txt")).unwrap(),
+        "outside content"
+    );
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[test]

@@ -12,7 +12,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Create a sibling workspace with a full backup and an independent stage.
+    /// Back up project files and stage an independent copy, omitting rebuildable output.
     pub fn begin(project: &Path) -> Result<Self> {
         let parent = project
             .parent()
@@ -26,7 +26,7 @@ impl Transaction {
             keep_backup: false,
         };
 
-        // Stage both the backup and stage in a single traversal of the project.
+        // Copy project files to both trees in one traversal; skip rebuildable output.
         stage_workspace_trees(
             project,
             &transaction.backup_path(),

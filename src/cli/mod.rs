@@ -16,7 +16,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Upgrade the current Flutter app after staging a complete copy
+    /// Upgrade the current Flutter app using a temporary backup and working copy
     Upgrade {
         /// Project directory (defaults to the current directory)
         #[arg(long, default_value = ".")]

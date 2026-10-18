@@ -3,11 +3,28 @@ use std::fs;
 use std::path::Path;
 use walkdir::{DirEntry, WalkDir};
 
+const REBUILDABLE_DIRECTORIES: [&str; 9] = [
+    "build",
+    ".dart_tool",
+    "android/.gradle",
+    "android/build",
+    "android/app/build",
+    "ios/Flutter/ephemeral",
+    "macos/Flutter/ephemeral",
+    "windows/flutter/ephemeral",
+    "linux/flutter/ephemeral",
+];
+
 pub fn stage_workspace_trees(source: &Path, backup: &Path, stage: &Path) -> Result<()> {
     fs::create_dir(backup).map_err(|e| FlupError::io("cannot create backup", e))?;
     fs::create_dir(stage).map_err(|e| FlupError::io("cannot create stage", e))?;
 
-    for entry in WalkDir::new(source).follow_links(false).min_depth(1) {
+    for entry in WalkDir::new(source)
+        .follow_links(false)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| !is_rebuildable_directory(source, entry))
+    {
         let entry = entry.map_err(|error| {
             let message = format!("cannot copy project tree: {error}");
             FlupError::InvalidProject(message)
@@ -22,6 +39,18 @@ pub fn stage_workspace_trees(source: &Path, backup: &Path, stage: &Path) -> Resu
         copy_entry_dual(&entry, &backup_target, &stage_target)?;
     }
     Ok(())
+}
+
+fn is_rebuildable_directory(source: &Path, entry: &DirEntry) -> bool {
+    // Match known paths only: user directories such as assets/build stay intact.
+    // Ignore links at these paths too, without following them outside the project.
+    let kind = entry.file_type();
+    (kind.is_dir() || kind.is_symlink())
+        && entry.path().strip_prefix(source).is_ok_and(|relative| {
+            REBUILDABLE_DIRECTORIES
+                .iter()
+                .any(|directory| relative == Path::new(directory))
+        })
 }
 
 pub fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
