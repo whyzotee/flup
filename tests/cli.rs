@@ -1,6 +1,47 @@
 use std::process::Command;
 
 #[test]
+fn stage_timer_finishes_cleanly_when_output_is_redirected() {
+    const CHILD: &str = "FLUP_TEST_STAGE_TIMER";
+    if std::env::var_os(CHILD).is_some() {
+        use flup::cli::output::StageProgress;
+        use flup::upgrade::UpgradeStage;
+        let mut progress = StageProgress::default();
+        progress.start(UpgradeStage::GeneratingTemplates);
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        progress.start(UpgradeStage::Detail {
+            message: "Base template: cache hit".into(),
+        });
+        progress.finish();
+        progress.finish();
+        drop(progress);
+        println!("timer stopped");
+        return;
+    }
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "stage_timer_finishes_cleanly_when_output_is_redirected",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains('\u{1b}'));
+    assert!(!stdout.contains('\r'));
+    assert!(stdout.contains("Base template: cache hit\n"));
+    assert!(stdout.contains("s)\ntimer stopped\n"));
+    assert_eq!(
+        stdout.matches("Generating Flutter templates... (").count(),
+        1
+    );
+}
+
+#[test]
 fn upgrade_help_lists_supported_options() {
     let output = Command::new(env!("CARGO_BIN_EXE_flup"))
         .args(["upgrade", "--help"])

@@ -155,11 +155,15 @@ fn options() -> UpgradeOptions {
 fn successful_upgrade_commits_only_reported_and_dependency_paths() {
     let backend = FakeBackend::default();
     let mut stages = Vec::new();
+    let mut details = Vec::new();
     let mut reports = 0;
     let outcome = upgrade_with_backend(
         &backend,
         options(),
-        |stage| stages.push(stage),
+        |stage| match stage {
+            UpgradeStage::Detail { message } => details.push(message),
+            stage => stages.push(stage),
+        },
         |_| {
             reports += 1;
         },
@@ -171,6 +175,8 @@ fn successful_upgrade_commits_only_reported_and_dependency_paths() {
     assert_eq!(stages.len(), 4);
     assert!(matches!(stages[0], UpgradeStage::Staging));
     assert!(matches!(stages[3], UpgradeStage::Committing));
+    assert_eq!(details[0], "Comparing templates with project files");
+    assert!(details[1].starts_with("Template comparison completed ("));
     assert_eq!(
         &backend.events.borrow()[..2],
         &["begin", "prepare_base_sdk"]

@@ -12,6 +12,8 @@ use crate::upgrade::{
     upgrade_with_backend,
 };
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Instant;
 
 pub struct SystemUpgradeBackend;
 
@@ -65,12 +67,71 @@ impl UpgradeBackend for SystemUpgradeBackend {
         new_template: &Path,
         info: &ProjectInfo,
     ) -> Result<()> {
+        self.generate_templates_with_progress(
+            base_sdk,
+            old_template,
+            target_sdk,
+            new_template,
+            info,
+            &mut |_| {},
+        )
+    }
+
+    fn generate_templates_with_progress(
+        &self,
+        base_sdk: &Path,
+        old_template: &Path,
+        target_sdk: &Path,
+        new_template: &Path,
+        info: &ProjectInfo,
+        on_progress: &mut dyn FnMut(UpgradeStage),
+    ) -> Result<()> {
         std::thread::scope(|s| {
-            let base_handle = s.spawn(|| {
-                process::generate_base_template(base_sdk, target_sdk, old_template, info)
+            let (sender, receiver) = mpsc::channel();
+            let base_sender = sender.clone();
+            let base_handle = s.spawn(move || {
+                let started = Instant::now();
+                let mut detail = |message| {
+                    let _ = base_sender.send(format!("Base: {message}"));
+                };
+                detail("Preparing template".into());
+                let result = process::generate_base_template_with_progress(
+                    base_sdk,
+                    target_sdk,
+                    old_template,
+                    info,
+                    &mut detail,
+                );
+                detail(format!(
+                    "Template {} ({:.1}s)",
+                    if result.is_ok() { "ready" } else { "failed" },
+                    started.elapsed().as_secs_f64()
+                ));
+                result
             });
-            let target_handle =
-                s.spawn(|| process::generate_template(target_sdk, new_template, info));
+            let target_handle = s.spawn(move || {
+                let started = Instant::now();
+                let mut detail = |message| {
+                    let _ = sender.send(format!("Target: {message}"));
+                };
+                detail("Preparing template".into());
+                let result = process::generate_template_with_progress(
+                    target_sdk,
+                    new_template,
+                    info,
+                    &mut detail,
+                );
+                detail(format!(
+                    "Template {} ({:.1}s)",
+                    if result.is_ok() { "ready" } else { "failed" },
+                    started.elapsed().as_secs_f64()
+                ));
+                result
+            });
+
+            for message in receiver {
+                on_progress(UpgradeStage::Detail { message });
+            }
 
             let base_res = base_handle.join().map_err(|_| {
                 FlupError::Internal("base template generation thread panicked".into())

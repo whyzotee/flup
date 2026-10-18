@@ -3,6 +3,8 @@ use crate::upgrade::template::Report;
 use crate::upgrade::{UpgradeOutcome, UpgradeStage, UpgradeSummary};
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
+use std::sync::mpsc::{self, Sender};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const EXIT_CODE_CONFLICTS: u8 = 2;
@@ -133,21 +135,108 @@ pub fn finish(outcome: Result<UpgradeOutcome>, duration: Duration) -> ExitCode {
 
 #[derive(Default)]
 pub struct StageProgress {
-    current: Option<(UpgradeStage, Instant)>,
+    current: Option<ActiveStage>,
+}
+
+struct ActiveStage {
+    label: String,
+    started: Instant,
+    stop: Option<Sender<()>>,
+    renderer: Option<JoinHandle<()>>,
+}
+
+impl ActiveStage {
+    fn render(&mut self) {
+        if std::io::stdout().is_terminal() {
+            let (stop, receiver) = mpsc::channel();
+            let label = self.label.clone();
+            let started = self.started;
+            self.stop = Some(stop);
+            self.renderer = Some(thread::spawn(move || {
+                loop {
+                    let mut stdout = std::io::stdout().lock();
+                    if write!(
+                        stdout,
+                        "\r\x1b[2K{} ({})",
+                        label,
+                        format_duration(started.elapsed())
+                    )
+                    .and_then(|_| stdout.flush())
+                    .is_err()
+                    {
+                        break;
+                    }
+                    drop(stdout);
+                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        _ => break,
+                    }
+                }
+            }));
+        }
+    }
+
+    fn pause(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(renderer) = self.renderer.take() {
+            let _ = renderer.join();
+        }
+    }
+
+    fn finish_line(&mut self) {
+        self.pause();
+        if std::io::stdout().is_terminal() {
+            print!("\r\x1b[2K{}", self.label);
+        } else {
+            print!("{}", self.label);
+        }
+        println!(
+            " ({})",
+            colorize(&format_duration(self.started.elapsed()), DIM)
+        );
+    }
 }
 
 impl StageProgress {
     pub fn start(&mut self, stage: UpgradeStage) {
+        if let UpgradeStage::Detail { message } = stage {
+            if let Some(active) = self.current.as_mut() {
+                active.pause();
+                if std::io::stdout().is_terminal() {
+                    print!("\r\x1b[2K");
+                }
+            }
+            println!("  {message}");
+            if let Some(active) = self.current.as_mut() {
+                active.render();
+            }
+            return;
+        }
         self.finish();
-        print_stage(stage);
-        self.current = Some((stage, Instant::now()));
+        let (icon, text) = stage_details(stage);
+        let mut active = ActiveStage {
+            label: format!("{} {}", colorize(icon, BOLD_CYAN), colorize(text, BOLD)),
+            started: Instant::now(),
+            stop: None,
+            renderer: None,
+        };
+        active.render();
+        self.current = Some(active);
     }
 
     /// Close the active timer even when the upgrade returns a conflict or error.
     pub fn finish(&mut self) {
-        if let Some((_, started)) = self.current.take() {
-            println!(" ({})", colorize(&format_duration(started.elapsed()), DIM));
+        if let Some(mut active) = self.current.take() {
+            active.finish_line();
         }
+    }
+}
+
+impl Drop for StageProgress {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -162,6 +251,7 @@ fn stage_details(stage: UpgradeStage) -> (&'static str, &'static str) {
             "[4/4]",
             "Applying verified changes to the original project...",
         ),
+        UpgradeStage::Detail { .. } => ("", ""),
     }
 }
 

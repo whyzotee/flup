@@ -317,17 +317,17 @@ fn store_cached_template_strips_non_template_entries_and_prunes_lru() {
     let entry2 = cache_root.join("entry-2");
     let entry3 = cache_root.join("entry-3");
 
-    store_cached_template(&raw_template, &entry1, 2);
+    store_cached_template(&raw_template, &entry1, 2).unwrap();
     assert!(entry1.join("android/build.gradle").exists());
     assert!(entry1.join(".gitignore").exists());
     assert!(!entry1.join("lib").exists());
     assert!(!entry1.join("test").exists());
     assert!(!entry1.join("README.md").exists());
 
-    store_cached_template(&raw_template, &entry2, 2);
+    store_cached_template(&raw_template, &entry2, 2).unwrap();
     // Touch entry1 so entry2 becomes the least-recently-used entry
     touch_cache_entry(&entry1);
-    store_cached_template(&raw_template, &entry3, 2);
+    store_cached_template(&raw_template, &entry3, 2).unwrap();
 
     prune_template_cache(&cache_root, 2);
 
@@ -337,4 +337,26 @@ fn store_cached_template_strips_non_template_entries_and_prunes_lru() {
         "least-recently-used entry2 should be evicted"
     );
     assert!(entry3.exists(), "newest entry3 should be kept");
+}
+
+#[test]
+fn cache_save_failure_returns_error_and_keeps_generated_template() {
+    let temp = tempfile::tempdir().unwrap();
+    let generated = temp.path().join("generated");
+    write(&generated, "android/build.gradle", "generated build");
+    let blocked_cache = temp.path().join("cache");
+    fs::write(&blocked_cache, "occupied by a file").unwrap();
+
+    let error = store_cached_template(&generated, &blocked_cache.join("entry"), 2).unwrap_err();
+
+    assert!(error.to_string().contains("cannot create template cache"));
+    assert!(std::error::Error::source(&error).is_some());
+    assert_eq!(
+        fs::read_to_string(generated.join("android/build.gradle")).unwrap(),
+        "generated build"
+    );
+    assert_eq!(
+        fs::read_to_string(blocked_cache).unwrap(),
+        "occupied by a file"
+    );
 }

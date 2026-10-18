@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 pub fn sdk_revision(root: &Path) -> Result<String> {
     let output = Command::new("git")
@@ -268,20 +269,57 @@ pub fn generate_base_template(
     output: &Path,
     info: &ProjectInfo,
 ) -> Result<()> {
-    if try_restore_cached_template(&info.revision, info, output, base_sdk) {
+    generate_base_template_with_progress(base_sdk, target_sdk, output, info, &mut |_| {})
+}
+
+pub fn generate_base_template_with_progress(
+    base_sdk: &Path,
+    target_sdk: &Path,
+    output: &Path,
+    info: &ProjectInfo,
+    on_progress: &mut dyn FnMut(String),
+) -> Result<()> {
+    if try_restore_cached_template(&info.revision, info, output, base_sdk, on_progress) {
         return Ok(());
     }
 
     if !base_sdk.exists() {
-        checkout_sdk_revision(target_sdk, &info.revision, base_sdk)?;
+        on_progress(format!("Checking out base SDK {}", info.revision));
+        let started = Instant::now();
+        let result = checkout_sdk_revision(target_sdk, &info.revision, base_sdk);
+        on_progress(format!(
+            "Base SDK checkout {} ({:.1}s)",
+            if result.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+            started.elapsed().as_secs_f64()
+        ));
+        result?;
     }
 
-    generate_template_for_revision(base_sdk, Some(&info.revision), output, info)
+    // The cache has already been checked before the potentially expensive checkout.
+    generate_template_for_revision(base_sdk, Some(&info.revision), output, info, on_progress)
 }
 
 pub fn generate_template(sdk: &Path, output: &Path, info: &ProjectInfo) -> Result<()> {
+    generate_template_with_progress(sdk, output, info, &mut |_| {})
+}
+
+pub fn generate_template_with_progress(
+    sdk: &Path,
+    output: &Path,
+    info: &ProjectInfo,
+    on_progress: &mut dyn FnMut(String),
+) -> Result<()> {
     let revision = sdk_revision(sdk).ok();
-    generate_template_for_revision(sdk, revision.as_deref(), output, info)
+    if let Some(rev) = revision.as_deref()
+        && try_restore_cached_template(rev, info, output, sdk, on_progress)
+    {
+        return Ok(());
+    }
+    generate_template_for_revision(sdk, revision.as_deref(), output, info, on_progress)
 }
 
 fn generate_template_for_revision(
@@ -289,23 +327,29 @@ fn generate_template_for_revision(
     revision: Option<&str>,
     output: &Path,
     info: &ProjectInfo,
+    on_progress: &mut dyn FnMut(String),
 ) -> Result<()> {
-    if let Some(rev) = revision
-        && try_restore_cached_template(rev, info, output, sdk)
-    {
-        return Ok(());
-    }
-
     if let (Some(rev), Some(cache_root)) = (revision, template_cache_root()) {
         let canonical_info = canonical_project_info(info);
         let canonical_dir = canonical_staging_path(output);
         let _ = fs::remove_dir_all(&canonical_dir);
 
-        run_flutter_create(sdk, &canonical_dir, &canonical_info)?;
+        timed_flutter_create(sdk, &canonical_dir, &canonical_info, on_progress)?;
         verify_template_output(&canonical_dir, &info.platforms, sdk)?;
 
         let cached_dir = cache_root.join(template_cache_key(rev, info));
-        store_cached_template(&canonical_dir, &cached_dir, MAX_CACHED_TEMPLATES);
+        let started = Instant::now();
+        match store_cached_template(&canonical_dir, &cached_dir, MAX_CACHED_TEMPLATES) {
+            Ok(()) => on_progress(format!(
+                "Template cache stored at {} ({:.1}s)",
+                cached_dir.display(),
+                started.elapsed().as_secs_f64()
+            )),
+            Err(error) => on_progress(format!(
+                "Warning: cannot save template cache at {}: {error}; continuing without caching",
+                cached_dir.display()
+            )),
+        }
 
         let params = TemplateParameters::from_project(info);
         let instantiate_res = instantiate_cached_template(&canonical_dir, output, &params);
@@ -316,7 +360,7 @@ fn generate_template_for_revision(
         return Ok(());
     }
 
-    run_flutter_create(sdk, output, info)?;
+    timed_flutter_create(sdk, output, info, on_progress)?;
     verify_template_output(output, &info.platforms, sdk)
 }
 
@@ -325,13 +369,21 @@ fn try_restore_cached_template(
     info: &ProjectInfo,
     output: &Path,
     sdk_for_error: &Path,
+    on_progress: &mut dyn FnMut(String),
 ) -> bool {
+    let started = Instant::now();
     let Some(cache_root) = template_cache_root() else {
+        on_progress("Template cache disabled or unavailable".into());
         return false;
     };
     let key = template_cache_key(revision, info);
     let cached_dir = cache_root.join(key);
     if verify_template_output(&cached_dir, &info.platforms, sdk_for_error).is_err() {
+        on_progress(format!(
+            "Template cache miss: {} ({:.1}s)",
+            cached_dir.display(),
+            started.elapsed().as_secs_f64()
+        ));
         return false;
     }
 
@@ -339,10 +391,20 @@ fn try_restore_cached_template(
     if instantiate_cached_template(&cached_dir, output, &params).is_ok()
         && verify_template_output(output, &info.platforms, sdk_for_error).is_ok()
     {
+        on_progress(format!(
+            "Template cache hit: {} ({:.1}s)",
+            cached_dir.display(),
+            started.elapsed().as_secs_f64()
+        ));
         return true;
     }
 
     let _ = fs::remove_dir_all(output);
+    on_progress(format!(
+        "Template cache could not be restored at {}; regenerating ({:.1}s)",
+        cached_dir.display(),
+        started.elapsed().as_secs_f64()
+    ));
     false
 }
 
@@ -352,6 +414,27 @@ fn canonical_staging_path(output: &Path) -> PathBuf {
         .and_then(|n| n.to_str())
         .unwrap_or("template");
     output.with_file_name(format!("{name}-canonical"))
+}
+
+fn timed_flutter_create(
+    sdk: &Path,
+    output: &Path,
+    info: &ProjectInfo,
+    on_progress: &mut dyn FnMut(String),
+) -> Result<()> {
+    on_progress("Running flutter create --no-pub".into());
+    let started = Instant::now();
+    let result = run_flutter_create(sdk, output, info);
+    on_progress(format!(
+        "flutter create {} ({:.1}s)",
+        if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        },
+        started.elapsed().as_secs_f64()
+    ));
+    result
 }
 
 fn run_flutter_create(sdk: &Path, output: &Path, info: &ProjectInfo) -> Result<()> {

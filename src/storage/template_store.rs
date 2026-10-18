@@ -342,31 +342,43 @@ pub fn instantiate_cached_template(
 }
 
 /// Store a canonical template into `cached_dir`, stripping non-template directories and pruning old entries.
-pub fn store_cached_template(source: &Path, cached_dir: &Path, max_entries: usize) {
-    let Some(cache_root) = cached_dir.parent() else {
-        return;
-    };
-    if fs::create_dir_all(cache_root).is_err() {
-        return;
-    }
+pub fn store_cached_template(source: &Path, cached_dir: &Path, max_entries: usize) -> Result<()> {
+    let cache_root = cached_dir.parent().ok_or_else(|| {
+        FlupError::Template(format!(
+            "cache path has no parent: {}",
+            cached_dir.display()
+        ))
+    })?;
+    fs::create_dir_all(cache_root).map_err(|error| {
+        FlupError::io(
+            format!("cannot create template cache {}", cache_root.display()),
+            error,
+        )
+    })?;
 
     if cached_dir.exists() {
         touch_cache_entry(cached_dir);
         prune_template_cache(cache_root, max_entries);
-        return;
+        return Ok(());
     }
 
     let temp_path = cache_root.join(unique_temp_cache_name("template"));
-    if copy_filtered_template(source, &temp_path).is_ok() {
+    let result = (|| {
+        copy_filtered_template(source, &temp_path)?;
         touch_cache_entry(&temp_path);
-        if fs::rename(&temp_path, cached_dir).is_err() {
-            let _ = fs::remove_dir_all(&temp_path);
-        }
-    } else {
+        fs::rename(&temp_path, cached_dir).map_err(|error| {
+            FlupError::io(
+                format!("cannot store template cache {}", cached_dir.display()),
+                error,
+            )
+        })
+    })();
+    if result.is_err() {
         let _ = fs::remove_dir_all(&temp_path);
     }
 
     prune_template_cache(cache_root, max_entries);
+    result
 }
 
 fn copy_filtered_template(source: &Path, destination: &Path) -> Result<()> {

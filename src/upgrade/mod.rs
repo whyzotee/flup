@@ -9,6 +9,7 @@ use self::project::ProjectInfo;
 use self::template::Report;
 use crate::error::{FlupError, Result};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 const MANDATORY_COMMIT_PATHS: [&str; 3] = [".metadata", "pubspec.yaml", "pubspec.lock"];
 
@@ -20,12 +21,13 @@ pub struct UpgradeOptions {
     pub force: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum UpgradeStage {
     Staging,
     GeneratingTemplates,
     UpgradingDependencies,
     Committing,
+    Detail { message: String },
 }
 
 pub struct UpgradeSummary {
@@ -77,6 +79,17 @@ pub trait UpgradeBackend {
         self.generate_template(base_sdk, old_template, info)?;
         self.generate_template(target_sdk, new_template, info)?;
         Ok(())
+    }
+    fn generate_templates_with_progress(
+        &self,
+        base_sdk: &Path,
+        old_template: &Path,
+        target_sdk: &Path,
+        new_template: &Path,
+        info: &ProjectInfo,
+        _on_progress: &mut dyn FnMut(UpgradeStage),
+    ) -> Result<()> {
+        self.generate_templates(base_sdk, old_template, target_sdk, new_template, info)
     }
     fn apply_templates(
         &self,
@@ -145,15 +158,38 @@ pub fn upgrade_with_backend(
     let new_template = transaction.workspace_path("target-template");
 
     on_progress(UpgradeStage::GeneratingTemplates);
-    backend.generate_templates(&base_sdk, &old_template, &target_sdk, &new_template, &info)?;
+    backend.generate_templates_with_progress(
+        &base_sdk,
+        &old_template,
+        &target_sdk,
+        &new_template,
+        &info,
+        &mut on_progress,
+    )?;
 
+    on_progress(UpgradeStage::Detail {
+        message: "Comparing templates with project files".into(),
+    });
+    let comparison_started = Instant::now();
     let report = backend.apply_templates(
         &old_template,
         &new_template,
         &stage,
         &info.platforms,
         options.force,
-    )?;
+    );
+    on_progress(UpgradeStage::Detail {
+        message: format!(
+            "Template comparison {} ({:.1}s)",
+            if report.is_ok() {
+                "completed"
+            } else {
+                "failed"
+            },
+            comparison_started.elapsed().as_secs_f64()
+        ),
+    });
+    let report = report?;
     let summary = UpgradeSummary {
         project: project.clone(),
         base_revision: info.revision,
