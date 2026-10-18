@@ -1,0 +1,20 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.33.0"
+ci = ["github"]
+installers = ["shell", "powershell"]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+]
+install-path = "~/.local/bin"
+unix-archive = ".tar.gz"
+checksum = "sha256"
+pr-run-mode = "plan"
+github-build-setup = "../build-setup.yml"
+post-announce-jobs = ["./release-notes"]
+

@@ -16,3 +16,7 @@ thiserror = "2.0.21"
 walkdir = "2.5.0"
 tempfile = "3.27.0"
 yaml-rust2 = { version = "0.13.0", default-features = false }
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

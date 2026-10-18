@@ -1,0 +1,46 @@
+name: Release notes
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Read release tag
+        env:
+          PLAN: ${{ inputs.plan }}
+        run: echo "RELEASE_TAG=$(jq -er '.announcement_tag' <<< "$PLAN")" >> "$GITHUB_ENV"
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --verbose --tag ${{ env.RELEASE_TAG }}
+        env:
+          OUTPUT: CHANGELOG.md
+      - name: Generate version notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --verbose --tag ${{ env.RELEASE_TAG }} --latest --strip header
+        env:
+          OUTPUT: version-notes.md
+      - name: Publish changelog and preserve installer instructions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$RELEASE_TAG" --json body --jq .body > installer-notes.md
+          cat version-notes.md installer-notes.md > release-notes.md
+          gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+          gh release upload "$RELEASE_TAG" CHANGELOG.md --clobber
