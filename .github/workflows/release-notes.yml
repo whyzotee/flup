@@ -35,12 +35,10 @@ jobs:
           args: --verbose --tag ${{ env.RELEASE_TAG }} --latest --strip header
         env:
           OUTPUT: version-notes.md
-      - name: Publish changelog and preserve installer instructions
+      - name: Publish release notes and changelog
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          gh release view "$RELEASE_TAG" --json body --jq .body > installer-notes.md
-          cat version-notes.md installer-notes.md > release-notes.md
-          gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+          gh release edit "$RELEASE_TAG" --notes-file version-notes.md
           gh release upload "$RELEASE_TAG" CHANGELOG.md --clobber

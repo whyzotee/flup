@@ -4,6 +4,9 @@ members = ["cargo:."]
 [dist]
 cargo-dist-version = "0.33.0"
 ci = ["github"]
+# Upload to an existing release; prepare-release creates a draft when needed.
+create-release = false
+plan-jobs = ["./prepare-release"]
 installers = ["shell", "powershell"]
 targets = [
     "x86_64-pc-windows-msvc",
