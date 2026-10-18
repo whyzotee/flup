@@ -196,3 +196,54 @@ fn lazy_base_sdk_validates_history_without_cloning_working_tree() {
     assert_eq!(resolved, base);
     assert!(!base.exists());
 }
+
+#[test]
+fn generation_substep_fails_when_flutter_exits_successfully_without_valid_output() {
+    use flup::flutter::process::generate_template_with_progress;
+    use flup::upgrade::UpgradeStage;
+    use flup::upgrade::project::ProjectInfo;
+
+    let temp = tempfile::tempdir().unwrap();
+    let sdk = temp.path().join("sdk");
+    fs::create_dir_all(sdk.join("bin")).unwrap();
+    fs::write(sdk.join("bin/flutter.bat"), "@echo off\r\nexit /b 0\r\n").unwrap();
+    let unix_binary = sdk.join("bin/flutter");
+    fs::write(&unix_binary, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&unix_binary, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let info = ProjectInfo {
+        name: "sample".into(),
+        revision: "unused".into(),
+        platforms: vec!["web".into()],
+        organization: "com.example".into(),
+        android_language: None,
+        ios_language: None,
+    };
+    let mut events = Vec::new();
+
+    let result =
+        generate_template_with_progress(&sdk, &temp.path().join("output"), &info, &mut |event| {
+            events.push(event)
+        });
+
+    assert!(matches!(result, Err(FlupError::Template(_))));
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        events[0],
+        UpgradeStage::SubstepStarted {
+            id: "target-generate",
+            ..
+        }
+    ));
+    assert!(matches!(
+        events[1],
+        UpgradeStage::SubstepFinished {
+            id: "target-generate",
+            failed: true,
+            ..
+        }
+    ));
+}

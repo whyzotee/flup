@@ -3,6 +3,7 @@ use crate::flutter::flutter_binary;
 use crate::storage::template_store::{
     MAX_CACHED_TEMPLATES, instantiate_cached_template, store_cached_template,
 };
+use crate::upgrade::UpgradeStage;
 use crate::upgrade::project::ProjectInfo;
 use crate::upgrade::template::{TemplateParameters, canonical_project_info};
 use std::ffi::OsString;
@@ -277,30 +278,37 @@ pub fn generate_base_template_with_progress(
     target_sdk: &Path,
     output: &Path,
     info: &ProjectInfo,
-    on_progress: &mut dyn FnMut(String),
+    on_progress: &mut dyn FnMut(UpgradeStage),
 ) -> Result<()> {
-    if try_restore_cached_template(&info.revision, info, output, base_sdk, on_progress) {
+    if try_restore_cached_template(
+        &info.revision,
+        info,
+        output,
+        base_sdk,
+        TemplateRole::Base,
+        on_progress,
+    ) {
         return Ok(());
     }
 
     if !base_sdk.exists() {
-        on_progress(format!("Checking out base SDK {}", info.revision));
-        let started = Instant::now();
-        let result = checkout_sdk_revision(target_sdk, &info.revision, base_sdk);
-        on_progress(format!(
-            "Base SDK checkout {} ({:.1}s)",
-            if result.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            },
-            started.elapsed().as_secs_f64()
-        ));
-        result?;
+        timed_substep(
+            "base-clone",
+            "Cloning base Flutter SDK...",
+            on_progress,
+            |_| checkout_sdk_revision(target_sdk, &info.revision, base_sdk),
+        )?;
     }
 
     // The cache has already been checked before the potentially expensive checkout.
-    generate_template_for_revision(base_sdk, Some(&info.revision), output, info, on_progress)
+    timed_substep(
+        "base-generate",
+        "Generating base template...",
+        on_progress,
+        |progress| {
+            generate_template_for_revision(base_sdk, Some(&info.revision), output, info, progress)
+        },
+    )
 }
 
 pub fn generate_template(sdk: &Path, output: &Path, info: &ProjectInfo) -> Result<()> {
@@ -311,15 +319,20 @@ pub fn generate_template_with_progress(
     sdk: &Path,
     output: &Path,
     info: &ProjectInfo,
-    on_progress: &mut dyn FnMut(String),
+    on_progress: &mut dyn FnMut(UpgradeStage),
 ) -> Result<()> {
     let revision = sdk_revision(sdk).ok();
     if let Some(rev) = revision.as_deref()
-        && try_restore_cached_template(rev, info, output, sdk, on_progress)
+        && try_restore_cached_template(rev, info, output, sdk, TemplateRole::Target, on_progress)
     {
         return Ok(());
     }
-    generate_template_for_revision(sdk, revision.as_deref(), output, info, on_progress)
+    timed_substep(
+        "target-generate",
+        "Generating target template...",
+        on_progress,
+        |progress| generate_template_for_revision(sdk, revision.as_deref(), output, info, progress),
+    )
 }
 
 fn generate_template_for_revision(
@@ -327,28 +340,25 @@ fn generate_template_for_revision(
     revision: Option<&str>,
     output: &Path,
     info: &ProjectInfo,
-    on_progress: &mut dyn FnMut(String),
+    on_progress: &mut dyn FnMut(UpgradeStage),
 ) -> Result<()> {
     if let (Some(rev), Some(cache_root)) = (revision, template_cache_root()) {
         let canonical_info = canonical_project_info(info);
         let canonical_dir = canonical_staging_path(output);
         let _ = fs::remove_dir_all(&canonical_dir);
 
-        timed_flutter_create(sdk, &canonical_dir, &canonical_info, on_progress)?;
+        run_flutter_create(sdk, &canonical_dir, &canonical_info)?;
         verify_template_output(&canonical_dir, &info.platforms, sdk)?;
 
         let cached_dir = cache_root.join(template_cache_key(rev, info));
-        let started = Instant::now();
-        match store_cached_template(&canonical_dir, &cached_dir, MAX_CACHED_TEMPLATES) {
-            Ok(()) => on_progress(format!(
-                "Template cache stored at {} ({:.1}s)",
-                cached_dir.display(),
-                started.elapsed().as_secs_f64()
-            )),
-            Err(error) => on_progress(format!(
-                "Warning: cannot save template cache at {}: {error}; continuing without caching",
-                cached_dir.display()
-            )),
+        if let Err(error) = store_cached_template(&canonical_dir, &cached_dir, MAX_CACHED_TEMPLATES)
+        {
+            on_progress(UpgradeStage::Detail {
+                message: format!(
+                    "Warning: cannot save template cache at {}: {error}; continuing without caching",
+                    cached_dir.display()
+                ),
+            });
         }
 
         let params = TemplateParameters::from_project(info);
@@ -360,7 +370,7 @@ fn generate_template_for_revision(
         return Ok(());
     }
 
-    timed_flutter_create(sdk, output, info, on_progress)?;
+    run_flutter_create(sdk, output, info)?;
     verify_template_output(output, &info.platforms, sdk)
 }
 
@@ -369,42 +379,38 @@ fn try_restore_cached_template(
     info: &ProjectInfo,
     output: &Path,
     sdk_for_error: &Path,
-    on_progress: &mut dyn FnMut(String),
+    role: TemplateRole,
+    on_progress: &mut dyn FnMut(UpgradeStage),
 ) -> bool {
-    let started = Instant::now();
     let Some(cache_root) = template_cache_root() else {
-        on_progress("Template cache disabled or unavailable".into());
         return false;
     };
     let key = template_cache_key(revision, info);
     let cached_dir = cache_root.join(key);
     if verify_template_output(&cached_dir, &info.platforms, sdk_for_error).is_err() {
-        on_progress(format!(
-            "Template cache miss: {} ({:.1}s)",
-            cached_dir.display(),
-            started.elapsed().as_secs_f64()
-        ));
         return false;
     }
 
     let params = TemplateParameters::from_project(info);
-    if instantiate_cached_template(&cached_dir, output, &params).is_ok()
-        && verify_template_output(output, &info.platforms, sdk_for_error).is_ok()
-    {
-        on_progress(format!(
-            "Template cache hit: {} ({:.1}s)",
-            cached_dir.display(),
-            started.elapsed().as_secs_f64()
-        ));
+    let (id, label) = match role {
+        TemplateRole::Base => ("base-cache", "Loading cached base template..."),
+        TemplateRole::Target => ("target-cache", "Loading cached target template..."),
+    };
+    let restored = timed_substep(id, label, on_progress, |_| {
+        instantiate_cached_template(&cached_dir, output, &params)?;
+        verify_template_output(output, &info.platforms, sdk_for_error)
+    });
+    if restored.is_ok() {
         return true;
     }
 
     let _ = fs::remove_dir_all(output);
-    on_progress(format!(
-        "Template cache could not be restored at {}; regenerating ({:.1}s)",
-        cached_dir.display(),
-        started.elapsed().as_secs_f64()
-    ));
+    on_progress(UpgradeStage::Detail {
+        message: format!(
+            "Warning: template cache could not be restored at {}; regenerating",
+            cached_dir.display()
+        ),
+    });
     false
 }
 
@@ -416,24 +422,26 @@ fn canonical_staging_path(output: &Path) -> PathBuf {
     output.with_file_name(format!("{name}-canonical"))
 }
 
-fn timed_flutter_create(
-    sdk: &Path,
-    output: &Path,
-    info: &ProjectInfo,
-    on_progress: &mut dyn FnMut(String),
-) -> Result<()> {
-    on_progress("Running flutter create --no-pub".into());
+#[derive(Clone, Copy)]
+enum TemplateRole {
+    Base,
+    Target,
+}
+
+fn timed_substep<T>(
+    id: &'static str,
+    label: &'static str,
+    on_progress: &mut dyn FnMut(UpgradeStage),
+    operation: impl FnOnce(&mut dyn FnMut(UpgradeStage)) -> Result<T>,
+) -> Result<T> {
     let started = Instant::now();
-    let result = run_flutter_create(sdk, output, info);
-    on_progress(format!(
-        "flutter create {} ({:.1}s)",
-        if result.is_ok() {
-            "completed"
-        } else {
-            "failed"
-        },
-        started.elapsed().as_secs_f64()
-    ));
+    on_progress(UpgradeStage::SubstepStarted { id, label });
+    let result = operation(on_progress);
+    on_progress(UpgradeStage::SubstepFinished {
+        id,
+        elapsed: started.elapsed(),
+        failed: result.is_err(),
+    });
     result
 }
 

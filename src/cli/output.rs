@@ -139,97 +139,151 @@ pub struct StageProgress {
 }
 
 struct ActiveStage {
-    label: String,
-    started: Instant,
-    stop: Option<Sender<()>>,
+    updates: Sender<UpgradeStage>,
     renderer: Option<JoinHandle<()>>,
 }
 
-impl ActiveStage {
-    fn render(&mut self) {
-        if std::io::stdout().is_terminal() {
-            let (stop, receiver) = mpsc::channel();
-            let label = self.label.clone();
-            let started = self.started;
-            self.stop = Some(stop);
-            self.renderer = Some(thread::spawn(move || {
-                loop {
-                    let mut stdout = std::io::stdout().lock();
-                    if write!(
-                        stdout,
-                        "\r\x1b[2K{} ({})",
-                        label,
-                        format_duration(started.elapsed())
-                    )
-                    .and_then(|_| stdout.flush())
-                    .is_err()
-                    {
-                        break;
-                    }
-                    drop(stdout);
-                    match receiver.recv_timeout(Duration::from_millis(100)) {
-                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                        _ => break,
+struct SubstepLine {
+    id: &'static str,
+    label: &'static str,
+    started: Instant,
+    result: Option<(Duration, bool)>,
+}
+
+impl SubstepLine {
+    fn text(&self) -> String {
+        let (elapsed, failed) = self.result.unwrap_or((self.started.elapsed(), false));
+        let status = if failed { " failed" } else { "" };
+        format!("  {}{} ({})", self.label, status, format_duration(elapsed))
+    }
+}
+
+fn redraw_progress(
+    label: &str,
+    elapsed: Duration,
+    substeps: &[SubstepLine],
+    previous_height: &mut usize,
+    finished: bool,
+) -> std::io::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    // Keep each timer on one physical row, even in a narrow or resized terminal.
+    write!(stdout, "\x1b[?7l")?;
+    let result = (|| {
+        if *previous_height > 1 {
+            write!(stdout, "\x1b[{}A", *previous_height - 1)?;
+        }
+        write!(stdout, "\r\x1b[2K{label} ({})", format_duration(elapsed))?;
+        for step in substeps {
+            write!(stdout, "\r\n\x1b[2K{}", step.text())?;
+        }
+        *previous_height = substeps.len() + 1;
+        if finished {
+            writeln!(stdout)?;
+        }
+        Ok(())
+    })();
+    // Restore wrapping even if a write above failed.
+    let restore = write!(stdout, "\x1b[?7h");
+    result.and(restore).and_then(|()| stdout.flush())
+}
+
+fn render_stage(label: String, started: Instant, receiver: mpsc::Receiver<UpgradeStage>) {
+    let terminal = std::io::stdout().is_terminal();
+    let mut substeps: Vec<SubstepLine> = Vec::new();
+    let mut height = 0;
+    loop {
+        if terminal
+            && redraw_progress(&label, started.elapsed(), &substeps, &mut height, false).is_err()
+        {
+            return;
+        }
+        match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(UpgradeStage::SubstepStarted { id, label }) => {
+                substeps.push(SubstepLine {
+                    id,
+                    label,
+                    started: Instant::now(),
+                    result: None,
+                });
+            }
+            Ok(UpgradeStage::SubstepFinished {
+                id,
+                elapsed,
+                failed,
+            }) => {
+                if let Some(step) = substeps.iter_mut().find(|step| step.id == id) {
+                    step.result = Some((elapsed, failed));
+                    if !terminal {
+                        println!("{}", step.text());
                     }
                 }
-            }));
+            }
+            Ok(UpgradeStage::Detail { message }) => {
+                if terminal {
+                    let mut stdout = std::io::stdout().lock();
+                    if height > 1 {
+                        let _ = write!(stdout, "\x1b[{}A", height - 1);
+                    }
+                    let _ = write!(stdout, "\r\x1b[2K");
+                    for _ in 1..height {
+                        let _ = write!(stdout, "\r\n\x1b[2K");
+                    }
+                    if height > 1 {
+                        let _ = write!(stdout, "\x1b[{}A", height - 1);
+                    }
+                    let _ = write!(stdout, "\r");
+                    height = 0;
+                }
+                println!("  {message}");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Ok(_) => {}
         }
     }
-
-    fn pause(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+    if terminal {
+        let _ = redraw_progress(&label, started.elapsed(), &substeps, &mut height, true);
+    } else {
+        for step in substeps.iter().filter(|step| step.result.is_none()) {
+            println!("{}", step.text());
         }
-        if let Some(renderer) = self.renderer.take() {
-            let _ = renderer.join();
-        }
-    }
-
-    fn finish_line(&mut self) {
-        self.pause();
-        if std::io::stdout().is_terminal() {
-            print!("\r\x1b[2K{}", self.label);
-        } else {
-            print!("{}", self.label);
-        }
-        println!(
-            " ({})",
-            colorize(&format_duration(self.started.elapsed()), DIM)
-        );
+        println!("{label} ({})", format_duration(started.elapsed()));
     }
 }
 
 impl StageProgress {
     pub fn start(&mut self, stage: UpgradeStage) {
-        if let UpgradeStage::Detail { message } = stage {
-            if let Some(active) = self.current.as_mut() {
-                active.pause();
-                if std::io::stdout().is_terminal() {
-                    print!("\r\x1b[2K");
-                }
-            }
-            println!("  {message}");
-            if let Some(active) = self.current.as_mut() {
-                active.render();
+        if matches!(
+            stage,
+            UpgradeStage::Detail { .. }
+                | UpgradeStage::SubstepStarted { .. }
+                | UpgradeStage::SubstepFinished { .. }
+        ) {
+            if let Some(active) = &self.current {
+                let _ = active.updates.send(stage);
             }
             return;
         }
         self.finish();
         let (icon, text) = stage_details(stage);
-        let mut active = ActiveStage {
-            label: format!("{} {}", colorize(icon, BOLD_CYAN), colorize(text, BOLD)),
-            started: Instant::now(),
-            stop: None,
-            renderer: None,
-        };
-        active.render();
-        self.current = Some(active);
+        let label = format!("{} {}", colorize(icon, BOLD_CYAN), colorize(text, BOLD));
+        let started = Instant::now();
+        let (updates, receiver) = mpsc::channel();
+        self.current = Some(ActiveStage {
+            updates,
+            renderer: Some(thread::spawn(move || {
+                render_stage(label, started, receiver)
+            })),
+        });
     }
 
     /// Close the active timer even when the upgrade returns a conflict or error.
     pub fn finish(&mut self) {
         if let Some(mut active) = self.current.take() {
-            active.finish_line();
+            drop(active.updates);
+            if let Some(renderer) = active.renderer.take() {
+                let _ = renderer.join();
+            }
         }
     }
 }
@@ -242,7 +296,7 @@ impl Drop for StageProgress {
 
 fn stage_details(stage: UpgradeStage) -> (&'static str, &'static str) {
     match stage {
-        UpgradeStage::Staging => ("[1/4]", "Staging complete project copy..."),
+        UpgradeStage::Staging => ("[1/4]", "Staging project backup and working copy..."),
         UpgradeStage::GeneratingTemplates => ("[2/4]", "Generating Flutter templates..."),
         UpgradeStage::UpgradingDependencies => {
             ("[3/4]", "Upgrading dependencies in temporary copy...")
@@ -251,7 +305,9 @@ fn stage_details(stage: UpgradeStage) -> (&'static str, &'static str) {
             "[4/4]",
             "Applying verified changes to the original project...",
         ),
-        UpgradeStage::Detail { .. } => ("", ""),
+        UpgradeStage::Detail { .. }
+        | UpgradeStage::SubstepStarted { .. }
+        | UpgradeStage::SubstepFinished { .. } => ("", ""),
     }
 }
 

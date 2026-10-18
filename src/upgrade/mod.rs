@@ -9,7 +9,7 @@ use self::project::ProjectInfo;
 use self::template::Report;
 use crate::error::{FlupError, Result};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const MANDATORY_COMMIT_PATHS: [&str; 3] = [".metadata", "pubspec.yaml", "pubspec.lock"];
 
@@ -27,7 +27,18 @@ pub enum UpgradeStage {
     GeneratingTemplates,
     UpgradingDependencies,
     Committing,
-    Detail { message: String },
+    Detail {
+        message: String,
+    },
+    SubstepStarted {
+        id: &'static str,
+        label: &'static str,
+    },
+    SubstepFinished {
+        id: &'static str,
+        elapsed: Duration,
+        failed: bool,
+    },
 }
 
 pub struct UpgradeSummary {
@@ -167,10 +178,11 @@ pub fn upgrade_with_backend(
         &mut on_progress,
     )?;
 
-    on_progress(UpgradeStage::Detail {
-        message: "Comparing templates with project files".into(),
-    });
     let comparison_started = Instant::now();
+    on_progress(UpgradeStage::SubstepStarted {
+        id: "comparison",
+        label: "Comparing templates with project files...",
+    });
     let report = backend.apply_templates(
         &old_template,
         &new_template,
@@ -178,16 +190,10 @@ pub fn upgrade_with_backend(
         &info.platforms,
         options.force,
     );
-    on_progress(UpgradeStage::Detail {
-        message: format!(
-            "Template comparison {} ({:.1}s)",
-            if report.is_ok() {
-                "completed"
-            } else {
-                "failed"
-            },
-            comparison_started.elapsed().as_secs_f64()
-        ),
+    on_progress(UpgradeStage::SubstepFinished {
+        id: "comparison",
+        elapsed: comparison_started.elapsed(),
+        failed: report.is_err(),
     });
     let report = report?;
     let summary = UpgradeSummary {

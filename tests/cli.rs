@@ -8,7 +8,25 @@ fn stage_timer_finishes_cleanly_when_output_is_redirected() {
         use flup::upgrade::UpgradeStage;
         let mut progress = StageProgress::default();
         progress.start(UpgradeStage::GeneratingTemplates);
+        progress.start(UpgradeStage::SubstepStarted {
+            id: "base-generate",
+            label: "Generating base template...",
+        });
+        progress.start(UpgradeStage::SubstepStarted {
+            id: "target-generate",
+            label: "Generating target template...",
+        });
+        progress.start(UpgradeStage::SubstepFinished {
+            id: "target-generate",
+            elapsed: std::time::Duration::from_millis(120),
+            failed: false,
+        });
         std::thread::sleep(std::time::Duration::from_millis(350));
+        progress.start(UpgradeStage::SubstepFinished {
+            id: "base-generate",
+            elapsed: std::time::Duration::from_millis(1500),
+            failed: true,
+        });
         progress.start(UpgradeStage::Detail {
             message: "Base template: cache hit".into(),
         });
@@ -34,6 +52,22 @@ fn stage_timer_finishes_cleanly_when_output_is_redirected() {
     assert!(!stdout.contains('\u{1b}'));
     assert!(!stdout.contains('\r'));
     assert!(stdout.contains("Base template: cache hit\n"));
+    assert_eq!(
+        stdout
+            .matches("Generating target template... (120ms)")
+            .count(),
+        1
+    );
+    assert_eq!(
+        stdout
+            .matches("Generating base template... failed (1.50s)")
+            .count(),
+        1
+    );
+    assert!(
+        stdout.find("Generating target template...").unwrap()
+            < stdout.find("Generating base template...").unwrap()
+    );
     assert!(stdout.contains("s)\ntimer stopped\n"));
     assert_eq!(
         stdout.matches("Generating Flutter templates... (").count(),
